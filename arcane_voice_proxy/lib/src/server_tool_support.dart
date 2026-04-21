@@ -78,7 +78,9 @@ class ProxyToolRegistry {
             "name": tool.name,
             "description": tool.description,
             "expects_response": true,
-            "params": _decodeParameters(tool.parametersJson),
+            "parameters": _decodeParameters(
+              tool.parametersJson,
+            ).elevenLabsSchemaSubset,
           },
       ];
 

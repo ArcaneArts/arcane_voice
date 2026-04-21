@@ -26,8 +26,8 @@ class ElevenLabsAgentApiClient {
     );
   }
 
-  Future<Map<String, Map<String, Object?>>> fetchWorkspaceClientToolsByName()
-      async {
+  Future<Map<String, Map<String, Object?>>>
+  fetchWorkspaceClientToolsByName() async {
     Map<String, Object?> response = await performJsonRequest(
       method: 'GET',
       uri: Uri.https('api.elevenlabs.io', '/v1/convai/tools'),
@@ -165,9 +165,10 @@ class ElevenLabsAgentConfigurator {
       return <String>[];
     }
 
-    List<Map<String, Object?>> desiredTools = toolRegistry.elevenLabsClientTools;
-    Map<String, Map<String, Object?>> existingToolsByName =
-        await apiClient.fetchWorkspaceClientToolsByName();
+    List<Map<String, Object?>> desiredTools =
+        toolRegistry.elevenLabsClientTools;
+    Map<String, Map<String, Object?>> existingToolsByName = await apiClient
+        .fetchWorkspaceClientToolsByName();
     List<String> resolvedToolIds = <String>[];
 
     for (Map<String, Object?> desiredTool in desiredTools) {
@@ -209,7 +210,9 @@ Map<String, Object?> buildElevenLabsConversationConfigUpdate({
     _castObjectMap(nextConversationConfig['conversation']) ??
         <String, Object?>{},
   );
-  List<String> clientEvents = _readStringList(nextConversation['client_events']);
+  List<String> clientEvents = _readStringList(
+    nextConversation['client_events'],
+  );
   List<String> requiredClientEvents = <String>[
     'audio',
     'user_transcript',
@@ -243,11 +246,8 @@ Map<String, Object?> buildElevenLabsConversationConfigUpdate({
   return nextConversationConfig;
 }
 
-Object? formatElevenLabsToolResult(String outputJson) {
+String formatElevenLabsToolResult(String outputJson) {
   Object? decoded = _decodeJsonValue(outputJson);
-  if (decoded is Map<String, dynamic>) {
-    return decoded.cast<String, Object?>();
-  }
   if (decoded is String) {
     return decoded;
   }
@@ -283,9 +283,7 @@ Object? _cloneJsonValue(Object? value) {
     return _cloneObjectMap(value);
   }
   if (value is List<dynamic>) {
-    return <Object?>[
-      for (Object? item in value) _cloneJsonValue(item),
-    ];
+    return <Object?>[for (Object? item in value) _cloneJsonValue(item)];
   }
   return value;
 }
@@ -332,4 +330,5 @@ Object? _decodeJsonValue(String source) {
   }
 }
 
-bool _jsonEquals(Object? left, Object? right) => jsonEncode(left) == jsonEncode(right);
+bool _jsonEquals(Object? left, Object? right) =>
+    jsonEncode(left) == jsonEncode(right);
