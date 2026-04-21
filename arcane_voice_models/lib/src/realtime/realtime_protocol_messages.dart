@@ -49,6 +49,7 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
   final String model;
   final String voice;
   final String instructions;
+  final String providerOptionsJson;
   final int inputSampleRate;
   final int outputSampleRate;
   final RealtimeTurnDetectionConfig turnDetection;
@@ -60,6 +61,7 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
     required this.model,
     required this.voice,
     required this.instructions,
+    this.providerOptionsJson = "{}",
     this.inputSampleRate = 24000,
     this.outputSampleRate = 24000,
     this.turnDetection = const RealtimeTurnDetectionConfig(),

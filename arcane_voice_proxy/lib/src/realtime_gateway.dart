@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
+import 'package:arcane_voice_proxy/src/elevenlabs_agent_session.dart';
 import 'package:arcane_voice_proxy/src/gemini_live_session.dart';
 import 'package:arcane_voice_proxy/src/grok_voice_session.dart';
 import 'package:arcane_voice_proxy/src/openai_realtime_session.dart';
@@ -13,17 +14,20 @@ class ServerEnvironment {
   final String? openAiApiKey;
   final String? geminiApiKey;
   final String? xAiApiKey;
+  final String? elevenLabsApiKey;
 
   const ServerEnvironment({
     required this.openAiApiKey,
     required this.geminiApiKey,
     required this.xAiApiKey,
+    required this.elevenLabsApiKey,
   });
 
   factory ServerEnvironment.fromPlatform() => ServerEnvironment(
     openAiApiKey: Platform.environment["OPENAI_API_KEY"],
     geminiApiKey: Platform.environment["GEMINI_API_KEY"],
     xAiApiKey: Platform.environment["XAI_API_KEY"],
+    elevenLabsApiKey: Platform.environment["ELEVENLABS_API_KEY"],
   );
 }
 
@@ -201,6 +205,14 @@ class RealtimeGatewaySession {
       onAudioChunk: sendAudio,
       onClosed: _handleProviderClosed,
     ),
+    RealtimeProviderCatalog.elevenLabsId => ElevenLabsAgentSession(
+      apiKey: apiKey,
+      config: config,
+      toolRegistry: toolRegistry,
+      onJsonEvent: sendMessage,
+      onAudioChunk: sendAudio,
+      onClosed: _handleProviderClosed,
+    ),
     _ => OpenAiRealtimeSession(
       apiKey: apiKey,
       config: config,
@@ -214,6 +226,7 @@ class RealtimeGatewaySession {
   String? _resolveApiKey(String provider) => switch (provider) {
     RealtimeProviderCatalog.geminiId => environment.geminiApiKey,
     RealtimeProviderCatalog.grokId => environment.xAiApiKey,
+    RealtimeProviderCatalog.elevenLabsId => environment.elevenLabsApiKey,
     _ => environment.openAiApiKey,
   };
 
@@ -222,6 +235,8 @@ class RealtimeGatewaySession {
       "GEMINI_API_KEY is missing on the server. Set it before starting a Gemini call.",
     RealtimeProviderCatalog.grokId =>
       "XAI_API_KEY is missing on the server. Set it before starting a Grok call.",
+    RealtimeProviderCatalog.elevenLabsId =>
+      "ELEVENLABS_API_KEY is missing on the server. Set it before starting an ElevenLabs call.",
     _ =>
       "OPENAI_API_KEY is missing on the server. Set it before starting an OpenAI call.",
   };

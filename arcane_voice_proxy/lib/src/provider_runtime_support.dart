@@ -45,13 +45,16 @@ class ProviderSessionRuntime {
     RealtimeSessionStateEvent(state: "connecting", provider: providerId),
   );
 
-  Future<void> emitSessionStarted({int? outputSampleRate}) async {
+  Future<void> emitSessionStarted({
+    int? inputSampleRate,
+    int? outputSampleRate,
+  }) async {
     await onJsonEvent(
       RealtimeSessionStartedEvent(
         provider: providerId,
         model: config.model,
         voice: config.voice,
-        inputSampleRate: config.inputSampleRate,
+        inputSampleRate: inputSampleRate ?? config.inputSampleRate,
         outputSampleRate: outputSampleRate ?? config.outputSampleRate,
       ),
     );

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 
 import 'package:arcane_voice/src/call/audio_capture_service.dart';
@@ -53,6 +54,7 @@ class CallSessionController extends ChangeNotifier {
   RealtimeProviderDefinition providerOption = RealtimeProviderCatalog.openAi;
   String model = RealtimeProviderCatalog.openAi.defaultModel;
   String voice = RealtimeProviderCatalog.openAi.defaultVoice;
+  String providerOptionsJson = "{}";
   String lastError = "";
   RealtimeTurnDetectionConfig turnDetectionConfig =
       const RealtimeTurnDetectionConfig();
@@ -80,6 +82,19 @@ class CallSessionController extends ChangeNotifier {
   List<TranscriptEntry> get transcriptEntries => transcriptTimeline.entries;
 
   List<String> get availableVoices => providerOption.voices;
+
+  String get elevenLabsAgentId {
+    try {
+      Object? decoded = jsonDecode(providerOptionsJson);
+      if (decoded is Map<String, dynamic>) {
+        return decoded["agentId"]?.toString() ?? "";
+      }
+      if (decoded is Map<String, Object?>) {
+        return decoded["agentId"]?.toString() ?? "";
+      }
+    } catch (_) {}
+    return "";
+  }
 
   void onPrimaryActionPressed() {
     if (canStart) {
@@ -113,6 +128,22 @@ class CallSessionController extends ChangeNotifier {
     _safeNotifyListeners();
   }
 
+  void onProviderOptionsJsonChanged(String nextValue) {
+    if (connecting || callActive || providerOptionsJson == nextValue) return;
+
+    providerOptionsJson = nextValue;
+    info("[client] provider options updated");
+    _safeNotifyListeners();
+  }
+
+  void onElevenLabsAgentIdChanged(String agentId) {
+    String trimmedAgentId = agentId.trim();
+    String nextProviderOptionsJson = trimmedAgentId.isEmpty
+        ? "{}"
+        : jsonEncode(<String, Object?>{"agentId": trimmedAgentId});
+    onProviderOptionsJsonChanged(nextProviderOptionsJson);
+  }
+
   Future<void> startCall() async {
     if (!canStart) return;
 
@@ -136,6 +167,7 @@ class CallSessionController extends ChangeNotifier {
           model: model,
           voice: voice,
           instructions: defaultInstructions,
+          providerOptionsJson: providerOptionsJson,
           inputSampleRate: 24000,
           outputSampleRate: 24000,
           turnDetection: turnDetectionConfig,
@@ -296,6 +328,11 @@ class CallSessionController extends ChangeNotifier {
   }
 
   void _appendOrQueueSystemEntry(String text) {
+    if (activeAssistantTurn != 0) {
+      _appendSystemEntry(text);
+      return;
+    }
+
     if (transcriptTimeline.hasPendingEntry(TranscriptSpeaker.user)) {
       info("[client] system note queued until user transcript final: $text");
       pendingSystemEntries = <String>[...pendingSystemEntries, text];

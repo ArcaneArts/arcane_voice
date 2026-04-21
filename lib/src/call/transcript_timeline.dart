@@ -95,14 +95,20 @@ class TranscriptTimeline {
   }
 
   void appendSystemEntry(String text) {
-    entries = <TranscriptEntry>[
-      ...entries,
-      TranscriptEntry(
-        speaker: TranscriptSpeaker.system,
-        text: text,
-        pending: false,
-      ),
-    ];
+    int pendingAssistantIndex = _findMostRecentPendingEntryIndex(
+      TranscriptSpeaker.assistant,
+    );
+    TranscriptEntry systemEntry = TranscriptEntry(
+      speaker: TranscriptSpeaker.system,
+      text: text,
+      pending: false,
+    );
+    if (pendingAssistantIndex == -1) {
+      entries = <TranscriptEntry>[...entries, systemEntry];
+      return;
+    }
+
+    entries = _insertEntry(index: pendingAssistantIndex, entry: systemEntry);
   }
 
   void discardPendingTranscript(TranscriptSpeaker speaker) {

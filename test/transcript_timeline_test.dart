@@ -130,4 +130,25 @@ void main() {
 
     expect(timeline.entries, isEmpty);
   });
+
+  test("system entry inserts before pending assistant entry", () {
+    TranscriptTimeline timeline = TranscriptTimeline();
+
+    timeline.applyFinal(
+      speaker: TranscriptSpeaker.user,
+      text: "What's the secret code?",
+    );
+    timeline.applyDelta(
+      speaker: TranscriptSpeaker.assistant,
+      text: "The secret code is yolo42.",
+    );
+    timeline.appendSystemEntry("Running client tool secretCode...");
+
+    expect(timeline.entries, hasLength(3));
+    expect(timeline.entries[0].speaker, TranscriptSpeaker.user);
+    expect(timeline.entries[1].speaker, TranscriptSpeaker.system);
+    expect(timeline.entries[1].text, "Running client tool secretCode...");
+    expect(timeline.entries[2].speaker, TranscriptSpeaker.assistant);
+    expect(timeline.entries[2].pending, isTrue);
+  });
 }

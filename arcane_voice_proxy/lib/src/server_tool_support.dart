@@ -65,6 +65,23 @@ class ProxyToolRegistry {
     },
   ];
 
+  List<RealtimeToolDefinition> get allDefinitions => <RealtimeToolDefinition>[
+    for (ServerTool tool in serverTools.tools.values) tool.definition,
+    ...clientTools.values,
+  ];
+
+  List<Map<String, Object?>> get elevenLabsClientTools =>
+      <Map<String, Object?>>[
+        for (RealtimeToolDefinition tool in allDefinitions)
+          <String, Object?>{
+            "type": "client",
+            "name": tool.name,
+            "description": tool.description,
+            "expects_response": true,
+            "params": _decodeParameters(tool.parametersJson),
+          },
+      ];
+
   String executionTarget(String name) => switch (_toolLocation(name)) {
     _ToolLocation.server => RealtimeToolExecutionTarget.server,
     _ToolLocation.client => RealtimeToolExecutionTarget.client,

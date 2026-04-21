@@ -8,6 +8,7 @@ void main() {
       model: RealtimeProviderCatalog.gemini.defaultModel,
       voice: RealtimeProviderCatalog.gemini.defaultVoice,
       instructions: 'Say hello.',
+      providerOptionsJson: '{"agentId":"agent_test"}',
       turnDetection: const RealtimeTurnDetectionConfig(
         speechThresholdRms: 120,
         speechStartMs: 250,
@@ -28,6 +29,7 @@ void main() {
     expect(decoded.model, original.model);
     expect(decoded.voice, original.voice);
     expect(decoded.instructions, original.instructions);
+    expect(decoded.providerOptionsJson, original.providerOptionsJson);
     expect(
       decoded.turnDetection.speechEndSilenceMs,
       original.turnDetection.speechEndSilenceMs,
@@ -68,6 +70,7 @@ void main() {
         RealtimeProviderCatalog.openAiId,
         RealtimeProviderCatalog.geminiId,
         RealtimeProviderCatalog.grokId,
+        RealtimeProviderCatalog.elevenLabsId,
       ],
     );
     expect(

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
@@ -17,6 +18,7 @@ class RealtimeSessionConfig {
   final String model;
   final String voice;
   final String instructions;
+  final String providerOptionsJson;
   final int inputSampleRate;
   final int outputSampleRate;
   final RealtimeTurnDetectionConfig turnDetection;
@@ -25,6 +27,7 @@ class RealtimeSessionConfig {
     required this.model,
     required this.voice,
     required this.instructions,
+    required this.providerOptionsJson,
     required this.inputSampleRate,
     required this.outputSampleRate,
     required this.turnDetection,
@@ -36,6 +39,7 @@ class RealtimeSessionConfig {
     model: request.model,
     voice: request.voice,
     instructions: request.instructions,
+    providerOptionsJson: request.providerOptionsJson,
     inputSampleRate: request.inputSampleRate,
     outputSampleRate: request.outputSampleRate,
     turnDetection: request.turnDetection,
@@ -45,6 +49,7 @@ class RealtimeSessionConfig {
     String? model,
     String? voice,
     String? instructions,
+    String? providerOptionsJson,
     int? inputSampleRate,
     int? outputSampleRate,
     RealtimeTurnDetectionConfig? turnDetection,
@@ -52,8 +57,22 @@ class RealtimeSessionConfig {
     model: model ?? this.model,
     voice: voice ?? this.voice,
     instructions: instructions ?? this.instructions,
+    providerOptionsJson: providerOptionsJson ?? this.providerOptionsJson,
     inputSampleRate: inputSampleRate ?? this.inputSampleRate,
     outputSampleRate: outputSampleRate ?? this.outputSampleRate,
     turnDetection: turnDetection ?? this.turnDetection,
   );
+
+  Map<String, Object?> get providerOptions {
+    try {
+      Object? decoded = jsonDecode(providerOptionsJson);
+      if (decoded is Map<String, dynamic>) {
+        return decoded.cast<String, Object?>();
+      }
+      if (decoded is Map<String, Object?>) {
+        return decoded;
+      }
+    } catch (_) {}
+    return <String, Object?>{};
+  }
 }

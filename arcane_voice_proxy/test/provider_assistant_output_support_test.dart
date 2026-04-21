@@ -60,6 +60,7 @@ ProviderSessionRuntime _buildRuntime({
     model: 'test-model',
     voice: 'test-voice',
     instructions: 'test instructions',
+    providerOptionsJson: '{}',
     inputSampleRate: 24000,
     outputSampleRate: 24000,
     turnDetection: RealtimeTurnDetectionConfig(),

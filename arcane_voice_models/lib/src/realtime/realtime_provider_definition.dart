@@ -21,6 +21,7 @@ class RealtimeProviderCatalog {
   static const String openAiId = "openai";
   static const String geminiId = "gemini";
   static const String grokId = "grok";
+  static const String elevenLabsId = "elevenlabs";
 
   static const RealtimeProviderDefinition openAi = RealtimeProviderDefinition(
     id: openAiId,
@@ -88,13 +89,28 @@ class RealtimeProviderCatalog {
     voices: <String>["eve", "ara", "rex", "sal", "leo"],
   );
 
+  static const RealtimeProviderDefinition elevenLabs =
+      RealtimeProviderDefinition(
+        id: elevenLabsId,
+        label: "ElevenLabs",
+        defaultModel: "voice-agent",
+        defaultVoice: "agent-default",
+        voices: <String>["agent-default"],
+      );
+
   static const List<RealtimeProviderDefinition> all = <RealtimeProviderDefinition>[
     openAi,
     gemini,
     grok,
+    elevenLabs,
   ];
 
-  static const List<String> ids = <String>[openAiId, geminiId, grokId];
+  static const List<String> ids = <String>[
+    openAiId,
+    geminiId,
+    grokId,
+    elevenLabsId,
+  ];
 
   const RealtimeProviderCatalog._();
 
@@ -103,6 +119,7 @@ class RealtimeProviderCatalog {
         openAiId => openAi,
         geminiId => gemini,
         grokId => grok,
+        elevenLabsId => elevenLabs,
         _ => null,
       };
 

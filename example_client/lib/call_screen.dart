@@ -71,6 +71,12 @@ class CallStatusCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           ProviderSelector(controller: controller),
+          if (controller.provider == RealtimeProviderCatalog.elevenLabsId) ...<
+            Widget
+          >[
+            const SizedBox(height: 12),
+            ElevenLabsAgentIdField(controller: controller),
+          ],
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -208,23 +214,50 @@ class VoiceSelector extends StatelessWidget {
   const VoiceSelector({super.key, required this.controller});
 
   @override
-  Widget build(BuildContext context) => DropdownButtonFormField<String>(
-    key: ValueKey<String>("${controller.provider}-${controller.voice}"),
-    initialValue: controller.voice,
+  Widget build(BuildContext context) {
+    if (controller.provider == RealtimeProviderCatalog.elevenLabsId) {
+      return const SizedBox.shrink();
+    }
+
+    return DropdownButtonFormField<String>(
+      key: ValueKey<String>("${controller.provider}-${controller.voice}"),
+      initialValue: controller.voice,
+      decoration: const InputDecoration(
+        labelText: "Voice",
+        border: OutlineInputBorder(),
+      ),
+      items: <DropdownMenuItem<String>>[
+        for (String voice in controller.availableVoices)
+          DropdownMenuItem<String>(value: voice, child: Text(voice)),
+      ],
+      onChanged: controller.callActive || controller.connecting
+          ? null
+          : (selectedVoice) {
+              if (selectedVoice == null) return;
+              controller.onVoiceChanged(selectedVoice);
+            },
+    );
+  }
+}
+
+class ElevenLabsAgentIdField extends StatelessWidget {
+  final CallSessionController controller;
+
+  const ElevenLabsAgentIdField({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) => TextFormField(
+    key: ValueKey<String>(
+      "elevenlabs-agent-${controller.provider}-${controller.elevenLabsAgentId}",
+    ),
+    initialValue: controller.elevenLabsAgentId,
+    enabled: !controller.callActive && !controller.connecting,
     decoration: const InputDecoration(
-      labelText: "Voice",
+      labelText: "ElevenLabs Agent ID",
+      hintText: "agent_...",
       border: OutlineInputBorder(),
     ),
-    items: <DropdownMenuItem<String>>[
-      for (String voice in controller.availableVoices)
-        DropdownMenuItem<String>(value: voice, child: Text(voice)),
-    ],
-    onChanged: controller.callActive || controller.connecting
-        ? null
-        : (selectedVoice) {
-            if (selectedVoice == null) return;
-            controller.onVoiceChanged(selectedVoice);
-          },
+    onChanged: controller.onElevenLabsAgentIdChanged,
   );
 }
 

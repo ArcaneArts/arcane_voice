@@ -152,6 +152,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     }
 
     if (payload is RealtimeTranscriptAssistantFinalEvent) {
+      _ensureAssistantTurnStarted(trigger: "transcript.final");
       transcriptTimeline.applyFinal(
         speaker: TranscriptSpeaker.assistant,
         text: payload.text,
