@@ -13,9 +13,12 @@ class GrokVoiceSession implements RealtimeProviderSession {
   final String apiKey;
   final RealtimeSessionConfig config;
   final ProxyToolRegistry toolRegistry;
-  final Future<void> Function(RealtimeServerMessage payload) onJsonEvent;
-  final Future<void> Function(Uint8List audioBytes) onAudioChunk;
-  final Future<void> Function() onClosed;
+  late final ProviderSessionRuntime runtime;
+  late final ProviderToolExecutionBridge toolExecutionBridge;
+  late final AssistantOutputLifecycle assistantOutput;
+  late final ProxyTurnDetector turnDetector;
+  final MonotonicTranscriptBuffer userTranscriptBuffer =
+      MonotonicTranscriptBuffer();
 
   WebSocket? socket;
   StreamSubscription<dynamic>? subscription;
@@ -23,34 +26,37 @@ class GrokVoiceSession implements RealtimeProviderSession {
   bool isClosed = false;
   int upstreamAudioChunkCount = 0;
   int downstreamAudioChunkCount = 0;
-  bool speechActive = false;
   bool responseActive = false;
-  bool assistantOutputActive = false;
   bool audioBufferedForCurrentTurn = false;
-  int silentDurationMs = 0;
-  int loudDurationMs = 0;
-  int bufferedSpeechLeadInDurationMs = 0;
-  String pendingUserTranscript = "";
-  List<BufferedAudioChunk> bufferedSpeechLeadIn = <BufferedAudioChunk>[];
 
   GrokVoiceSession({
     required this.apiKey,
     required this.config,
     required this.toolRegistry,
-    required this.onJsonEvent,
-    required this.onAudioChunk,
-    required this.onClosed,
-  });
+    required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
+    required Future<void> Function(Uint8List audioBytes) onAudioChunk,
+    required Future<void> Function() onClosed,
+  }) {
+    runtime = ProviderSessionRuntime(
+      providerId: RealtimeProviderCatalog.grokId,
+      providerLabel: "grok",
+      config: config,
+      toolRegistry: toolRegistry,
+      onJsonEvent: onJsonEvent,
+      onAudioChunk: onAudioChunk,
+      onClosed: onClosed,
+    );
+    toolExecutionBridge = ProviderToolExecutionBridge(runtime: runtime);
+    assistantOutput = AssistantOutputLifecycle(runtime: runtime);
+    turnDetector = ProxyTurnDetector(runtime: runtime);
+  }
 
   @override
   Future<void> start() async {
     info("[grok] connecting realtime websocket model=${config.model}");
-    await onJsonEvent(
-      RealtimeSessionStateEvent(
-        state: "connecting",
-        provider: RealtimeProviderCatalog.grokId,
-      ),
-    );
+    runtime.startDebugClock();
+    runtime.logTurnDebug();
+    await runtime.emitConnecting();
 
     Uri uri = Uri.parse("wss://api.x.ai/v1/realtime");
     WebSocket providerSocket = await WebSocket.connect(
@@ -80,18 +86,18 @@ class GrokVoiceSession implements RealtimeProviderSession {
     if (isClosed) return;
 
     upstreamAudioChunkCount++;
-    int rms = Pcm16LevelMeter.computeRms(audioBytes);
-    int chunkDurationMs = Pcm16ChunkTiming.chunkDurationMs(
-      audioBytes: audioBytes,
-      sampleRate: config.inputSampleRate,
-    );
     if (upstreamAudioChunkCount <= 5 ||
         upstreamAudioChunkCount % audioLogInterval == 0) {
       info(
         "[grok] upstream audio chunk #$upstreamAudioChunkCount (${audioBytes.length} bytes)",
       );
     }
-    await _handleTurnDetection(audioBytes, rms, chunkDurationMs);
+    await turnDetector.processAudio(
+      audioBytes: audioBytes,
+      onAppendAudio: _appendAudioChunk,
+      onSpeechStarted: _handleSpeechStarted,
+      onSpeechStopped: _handleSpeechStopped,
+    );
   }
 
   @override
@@ -153,8 +159,8 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
     if (type == "response.created") {
       responseActive = true;
-      assistantOutputActive = false;
       await _flushPendingUserTranscript();
+      assistantOutput.reset();
       info("[grok] response created");
       return;
     }
@@ -163,20 +169,16 @@ class GrokVoiceSession implements RealtimeProviderSession {
       responseActive = false;
       await _flushPendingUserTranscript();
       info("[grok] response done");
-      if (assistantOutputActive) {
-        await onJsonEvent(
-          const RealtimeAssistantOutputCompletedEvent(reason: "response.done"),
-        );
-        await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      if (assistantOutput.isActive) {
+        await assistantOutput.completeAndNotify(reason: "response.done");
       } else {
         info("[grok] response done without assistant output");
       }
-      assistantOutputActive = false;
       return;
     }
 
     if (type == "input_audio_buffer.speech_started") {
-      pendingUserTranscript = "";
+      userTranscriptBuffer.startTurn();
       return;
     }
 
@@ -192,21 +194,22 @@ class GrokVoiceSession implements RealtimeProviderSession {
     if (type == "response.output_audio.delta") {
       String delta = event["delta"]?.toString() ?? "";
       if (delta.isEmpty) return;
-      await _ensureAssistantOutputStarted();
+      await assistantOutput.ensureStarted(trigger: "audio");
 
       downstreamAudioChunkCount++;
+      assistantOutput.recordAudioChunk();
       if (downstreamAudioChunkCount == 1 ||
           downstreamAudioChunkCount % 50 == 0) {
         info("[grok] downstream audio chunk #$downstreamAudioChunkCount");
       }
-      await onAudioChunk(base64Decode(delta));
+      await runtime.emitAudio(base64Decode(delta));
       return;
     }
 
     if (type == "response.output_audio_transcript.delta" ||
         type == "response.text.delta") {
-      await _ensureAssistantOutputStarted();
-      await onJsonEvent(
+      await assistantOutput.ensureStarted(trigger: "transcript");
+      await runtime.onJsonEvent(
         RealtimeTranscriptAssistantDeltaEvent(
           text: event["delta"]?.toString() ?? "",
         ),
@@ -215,9 +218,9 @@ class GrokVoiceSession implements RealtimeProviderSession {
     }
 
     if (type == "response.output_audio_transcript.done") {
-      await _ensureAssistantOutputStarted();
+      await assistantOutput.ensureStarted(trigger: "transcript.final");
       info("[grok] assistant transcript final");
-      await onJsonEvent(
+      await runtime.onJsonEvent(
         RealtimeTranscriptAssistantFinalEvent(
           text: event["transcript"]?.toString() ?? "",
         ),
@@ -247,19 +250,11 @@ class GrokVoiceSession implements RealtimeProviderSession {
     String rawArguments = event["arguments"]?.toString() ?? "{}";
     if (toolName.isEmpty || callId.isEmpty) return;
     info("[grok] executing tool $toolName");
-
-    String executionTarget = toolRegistry.executionTarget(toolName);
-    await onJsonEvent(
-      RealtimeToolStartedEvent(
-        callId: callId,
-        name: toolName,
-        executionTarget: executionTarget,
-      ),
-    );
-
-    ToolExecutionResult output = await toolRegistry.executeJsonString(
+    ToolExecutionInvocation invocation = toolExecutionBridge.createInvocation(
       callId: callId,
       name: toolName,
+    );
+    ToolExecutionResult output = await invocation.executeJson(
       rawArguments: rawArguments,
     );
 
@@ -274,45 +269,29 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
     await _sendProviderEvent(<String, Object?>{"type": "response.create"});
 
-    await onJsonEvent(
-      RealtimeToolCompletedEvent(
-        callId: callId,
-        name: toolName,
-        executionTarget: output.executionTarget,
-        success: output.success,
-        error: output.error,
-      ),
-    );
+    await invocation.emitCompleted(output);
   }
 
   Future<void> _handleUserTranscript(Map<String, Object?> event) async {
     String transcript = event["transcript"]?.toString() ?? "";
-    if (transcript.isEmpty || transcript == pendingUserTranscript) return;
-
-    String delta = transcript.startsWith(pendingUserTranscript)
-        ? transcript.substring(pendingUserTranscript.length)
-        : transcript;
-    pendingUserTranscript = transcript;
-    await onJsonEvent(RealtimeTranscriptUserDeltaEvent(text: delta));
+    String? delta = userTranscriptBuffer.applySnapshot(transcript);
+    if (delta == null) return;
+    await runtime.onJsonEvent(RealtimeTranscriptUserDeltaEvent(text: delta));
   }
 
   Future<void> _handleProviderErrorMessage(Map<String, Object?> event) async {
     warning("[grok] provider error event: ${jsonEncode(event)}");
     Object? rawError = event["error"];
     if (rawError is Map<String, dynamic>) {
-      await onJsonEvent(
-        RealtimeErrorEvent(
-          message: rawError["message"]?.toString() ?? "Grok realtime error",
-          code: rawError["code"]?.toString(),
-        ),
+      await runtime.emitError(
+        message: rawError["message"]?.toString() ?? "Grok realtime error",
+        code: rawError["code"]?.toString(),
       );
       return;
     }
 
-    await onJsonEvent(
-      RealtimeErrorEvent(
-        message: event["message"]?.toString() ?? "Grok realtime error",
-      ),
+    await runtime.emitError(
+      message: event["message"]?.toString() ?? "Grok realtime error",
     );
   }
 
@@ -320,41 +299,34 @@ class GrokVoiceSession implements RealtimeProviderSession {
     if (sessionStarted) return;
     sessionStarted = true;
     info("[grok] session updated and ready");
-    await onJsonEvent(
-      RealtimeSessionStartedEvent(
-        provider: RealtimeProviderCatalog.grokId,
-        model: config.model,
-        voice: config.voice,
-        inputSampleRate: config.inputSampleRate,
-        outputSampleRate: config.outputSampleRate,
-      ),
-    );
-    await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+    await runtime.emitSessionStarted();
   }
 
   Future<void> _flushPendingUserTranscript() async {
-    if (pendingUserTranscript.isEmpty) return;
+    String? transcript = userTranscriptBuffer.finalizeText();
+    if (transcript == null) return;
 
     info("[grok] user transcript final");
-    await onJsonEvent(
-      RealtimeTranscriptUserFinalEvent(text: pendingUserTranscript),
+    await runtime.onJsonEvent(
+      RealtimeTranscriptUserFinalEvent(text: transcript),
     );
-    pendingUserTranscript = "";
   }
 
   Future<void> _handleProviderDone() async {
     responseActive = false;
+    assistantOutput.logFinished(reason: "socket.done");
     info("[grok] websocket done");
     await close();
-    await onClosed();
+    await runtime.notifyClosed();
   }
 
   Future<void> _handleProviderError(Object error) async {
     responseActive = false;
+    assistantOutput.logFinished(reason: "socket.error");
     warning("[grok] websocket error: $error");
-    await onJsonEvent(RealtimeErrorEvent(message: error.toString()));
+    await runtime.emitError(message: error.toString());
     await close();
-    await onClosed();
+    await runtime.notifyClosed();
   }
 
   Future<void> _sendProviderEvent(Map<String, Object?> payload) async {
@@ -403,74 +375,24 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   bool _isStreamingDeltaEvent(String type) => type.endsWith(".delta");
 
-  Future<void> _handleTurnDetection(
-    Uint8List audioBytes,
-    int rms,
-    int chunkDurationMs,
-  ) async {
-    if (speechActive) {
-      await _appendAudioChunk(audioBytes);
-      if (rms >= config.turnDetection.speechThresholdRms) {
-        silentDurationMs = 0;
-        return;
-      }
-
-      silentDurationMs += chunkDurationMs;
-      if (silentDurationMs < config.turnDetection.speechEndSilenceMs) return;
-
-      speechActive = false;
-      silentDurationMs = 0;
-      loudDurationMs = 0;
-      await _commitBufferedAudio();
-      return;
-    }
-
-    _bufferLeadIn(audioBytes, chunkDurationMs);
-
-    if (rms < config.turnDetection.speechThresholdRms) {
-      loudDurationMs = 0;
-      return;
-    }
-
-    loudDurationMs += chunkDurationMs;
-    if (loudDurationMs < config.turnDetection.speechStartMs) return;
-
-    speechActive = true;
-    silentDurationMs = 0;
-    loudDurationMs = 0;
-    pendingUserTranscript = "";
+  Future<void> _handleSpeechStarted(ProxySpeechStartEvent event) async {
+    userTranscriptBuffer.startTurn();
     if (responseActive && config.turnDetection.bargeInEnabled) {
       info("[grok] cancelling active response for new user speech");
       responseActive = false;
-      assistantOutputActive = false;
+      assistantOutput.reset();
       await interrupt();
-    }
-    info("[grok] proxy speech started");
-    await onJsonEvent(const RealtimeInputSpeechStartedEvent());
-
-    List<BufferedAudioChunk> speechLeadIn = bufferedSpeechLeadIn;
-    bufferedSpeechLeadIn = <BufferedAudioChunk>[];
-    bufferedSpeechLeadInDurationMs = 0;
-    for (BufferedAudioChunk chunk in speechLeadIn) {
-      await _appendAudioChunk(chunk.audioBytes);
     }
   }
 
-  void _bufferLeadIn(Uint8List audioBytes, int chunkDurationMs) {
-    bufferedSpeechLeadIn = <BufferedAudioChunk>[
-      ...bufferedSpeechLeadIn,
-      BufferedAudioChunk(
-        audioBytes: Uint8List.fromList(audioBytes),
-        durationMs: chunkDurationMs,
-      ),
-    ];
-    bufferedSpeechLeadInDurationMs += chunkDurationMs;
-    while (bufferedSpeechLeadInDurationMs > config.turnDetection.preSpeechMs &&
-        bufferedSpeechLeadIn.isNotEmpty) {
-      BufferedAudioChunk removedChunk = bufferedSpeechLeadIn.first;
-      bufferedSpeechLeadIn = bufferedSpeechLeadIn.sublist(1);
-      bufferedSpeechLeadInDurationMs -= removedChunk.durationMs;
-    }
+  Future<void> _handleSpeechStopped(ProxySpeechStopEvent event) async {
+    if (!audioBufferedForCurrentTurn) return;
+    audioBufferedForCurrentTurn = false;
+    info("[grok] response.create sent");
+    await _sendProviderEvent(<String, Object?>{
+      "type": "input_audio_buffer.commit",
+    });
+    await _sendProviderEvent(<String, Object?>{"type": "response.create"});
   }
 
   Future<void> _appendAudioChunk(Uint8List audioBytes) async {
@@ -479,25 +401,5 @@ class GrokVoiceSession implements RealtimeProviderSession {
       "type": "input_audio_buffer.append",
       "audio": base64Encode(audioBytes),
     });
-  }
-
-  Future<void> _commitBufferedAudio() async {
-    if (!audioBufferedForCurrentTurn) return;
-    audioBufferedForCurrentTurn = false;
-    info("[grok] proxy speech stopped, committing audio buffer");
-    await onJsonEvent(const RealtimeInputSpeechStoppedEvent());
-    await _sendProviderEvent(<String, Object?>{
-      "type": "input_audio_buffer.commit",
-    });
-    info("[grok] response.create sent");
-    await _sendProviderEvent(<String, Object?>{"type": "response.create"});
-  }
-
-  Future<void> _ensureAssistantOutputStarted() async {
-    if (assistantOutputActive) {
-      return;
-    }
-    assistantOutputActive = true;
-    await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
   }
 }

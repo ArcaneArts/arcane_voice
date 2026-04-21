@@ -13,10 +13,12 @@ class GeminiLiveSession implements RealtimeProviderSession {
   final String apiKey;
   final RealtimeSessionConfig config;
   final ProxyToolRegistry toolRegistry;
-  final Future<void> Function(RealtimeServerMessage payload) onJsonEvent;
-  final Future<void> Function(Uint8List audioBytes) onAudioChunk;
-  final Future<void> Function() onClosed;
-  final Stopwatch debugClock = Stopwatch();
+  late final ProviderSessionRuntime runtime;
+  late final ProviderToolExecutionBridge toolExecutionBridge;
+  final MonotonicTranscriptBuffer userTranscriptBuffer =
+      MonotonicTranscriptBuffer();
+  final MonotonicTranscriptBuffer assistantTranscriptBuffer =
+      MonotonicTranscriptBuffer();
 
   WebSocket? socket;
   StreamSubscription<dynamic>? subscription;
@@ -26,8 +28,6 @@ class GeminiLiveSession implements RealtimeProviderSession {
   bool speechActive = false;
   bool responseActive = false;
   bool assistantTurnInterrupted = false;
-  bool userTranscriptFinalizedForCurrentTurn = false;
-  bool assistantTranscriptFinalizedForCurrentTurn = false;
   int upstreamAudioChunkCount = 0;
   int downstreamAudioChunkCount = 0;
   int silentDurationMs = 0;
@@ -41,36 +41,34 @@ class GeminiLiveSession implements RealtimeProviderSession {
   int responseStartedAtMs = -1;
   int firstAudioAtMs = -1;
   int responseAudioChunkCount = 0;
-  String pendingUserTranscript = "";
-  String pendingAssistantTranscript = "";
   List<BufferedAudioChunk> bufferedSpeechLeadIn = <BufferedAudioChunk>[];
 
   GeminiLiveSession({
     required this.apiKey,
     required this.config,
     required this.toolRegistry,
-    required this.onJsonEvent,
-    required this.onAudioChunk,
-    required this.onClosed,
-  });
+    required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
+    required Future<void> Function(Uint8List audioBytes) onAudioChunk,
+    required Future<void> Function() onClosed,
+  }) {
+    runtime = ProviderSessionRuntime(
+      providerId: RealtimeProviderCatalog.geminiId,
+      providerLabel: "gemini",
+      config: config,
+      toolRegistry: toolRegistry,
+      onJsonEvent: onJsonEvent,
+      onAudioChunk: onAudioChunk,
+      onClosed: onClosed,
+    );
+    toolExecutionBridge = ProviderToolExecutionBridge(runtime: runtime);
+  }
 
   @override
   Future<void> start() async {
     info("[gemini] connecting live websocket model=${config.model}");
-    debugClock
-      ..reset()
-      ..start();
-    info(
-      "[gemini] turn debug threshold=${config.turnDetection.speechThresholdRms} "
-      "startMs=${config.turnDetection.speechStartMs} endSilenceMs=${config.turnDetection.speechEndSilenceMs} "
-      "preSpeechMs=${config.turnDetection.preSpeechMs} bargeIn=${config.turnDetection.bargeInEnabled}",
-    );
-    await onJsonEvent(
-      RealtimeSessionStateEvent(
-        state: "connecting",
-        provider: RealtimeProviderCatalog.geminiId,
-      ),
-    );
+    runtime.startDebugClock();
+    runtime.logTurnDebug();
+    await runtime.emitConnecting();
 
     Uri uri = Uri.parse(
       "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${Uri.encodeQueryComponent(apiKey)}",
@@ -185,9 +183,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
     if (event.containsKey("goAway")) {
       warning("[gemini] server requested go away");
-      await onJsonEvent(
-        const RealtimeErrorEvent(message: "Gemini requested session shutdown."),
-      );
+      await runtime.emitError(message: "Gemini requested session shutdown.");
       return;
     }
 
@@ -200,14 +196,15 @@ class GeminiLiveSession implements RealtimeProviderSession {
   Future<void> _handleServerContent(Map<String, Object?> content) async {
     if (content["interrupted"] == true) {
       info(
-        "[gemini] assistant turn #$assistantTurnCount interrupted by user activity at ${_debugNowMs()}ms",
+        "[gemini] assistant turn #$assistantTurnCount interrupted by user activity at ${runtime.nowMs}ms",
       );
       responseActive = false;
       assistantTurnInterrupted = true;
       _logResponseFinished(reason: "interrupted");
-      assistantTranscriptFinalizedForCurrentTurn = true;
-      pendingAssistantTranscript = "";
-      await onJsonEvent(const RealtimeTranscriptAssistantDiscardEvent());
+      assistantTranscriptBuffer.discard();
+      await runtime.onJsonEvent(
+        const RealtimeTranscriptAssistantDiscardEvent(),
+      );
     }
 
     String inputTranscript = _readTranscriptionText(
@@ -231,22 +228,20 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
     if (content["generationComplete"] == true) {
       info(
-        "[gemini] assistant turn #$assistantTurnCount generation complete at ${_debugNowMs()}ms",
+        "[gemini] assistant turn #$assistantTurnCount generation complete at ${runtime.nowMs}ms",
       );
     }
 
     if (content["turnComplete"] == true) {
       info(
-        "[gemini] assistant turn #$assistantTurnCount turn complete at ${_debugNowMs()}ms",
+        "[gemini] assistant turn #$assistantTurnCount turn complete at ${runtime.nowMs}ms",
       );
       _logResponseFinished();
       await _flushPendingTranscripts();
       responseActive = false;
       assistantTurnInterrupted = false;
-      await onJsonEvent(
-        const RealtimeAssistantOutputCompletedEvent(reason: "turnComplete"),
-      );
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      await runtime.emitAssistantOutputCompleted(reason: "turnComplete");
+      await runtime.emitReady();
     }
   }
 
@@ -255,16 +250,15 @@ class GeminiLiveSession implements RealtimeProviderSession {
       responseActive = true;
       assistantTurnCount++;
       assistantTurnInterrupted = false;
-      assistantTranscriptFinalizedForCurrentTurn = false;
-      pendingAssistantTranscript = "";
-      responseStartedAtMs = _debugNowMs();
+      assistantTranscriptBuffer.startTurn();
+      responseStartedAtMs = runtime.nowMs;
       firstAudioAtMs = -1;
       responseAudioChunkCount = 0;
       info(
         "[gemini] assistant turn #$assistantTurnCount started at ${responseStartedAtMs}ms "
-        "after activityEnd ${_formatLatency(responseStartedAtMs, lastActivityEndAtMs)}",
+        "after activityEnd ${ProviderDebugTiming.formatLatency(currentMs: responseStartedAtMs, startedAtMs: lastActivityEndAtMs)}",
       );
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
+      await runtime.emitResponding();
     }
 
     Object? rawParts = modelTurn["parts"];
@@ -291,17 +285,17 @@ class GeminiLiveSession implements RealtimeProviderSession {
     downstreamAudioChunkCount++;
     responseAudioChunkCount++;
     if (firstAudioAtMs < 0) {
-      firstAudioAtMs = _debugNowMs();
+      firstAudioAtMs = runtime.nowMs;
       info(
         "[gemini] assistant turn #$assistantTurnCount first audio at ${firstAudioAtMs}ms "
-        "latency=${_formatLatency(firstAudioAtMs, responseStartedAtMs)}",
+        "latency=${ProviderDebugTiming.formatLatency(currentMs: firstAudioAtMs, startedAtMs: responseStartedAtMs)}",
       );
     }
     if (downstreamAudioChunkCount == 1 ||
         downstreamAudioChunkCount % audioLogInterval == 0) {
       info("[gemini] downstream audio chunk #$downstreamAudioChunkCount");
     }
-    await onAudioChunk(base64Decode(data));
+    await runtime.emitAudio(base64Decode(data));
   }
 
   Future<void> _handleToolCall(Map<String, Object?> toolCall) async {
@@ -318,21 +312,14 @@ class GeminiLiveSession implements RealtimeProviderSession {
       if (toolName.isEmpty || callId.isEmpty) continue;
 
       info("[gemini] executing tool $toolName");
-      String executionTarget = toolRegistry.executionTarget(toolName);
-      await onJsonEvent(
-        RealtimeToolStartedEvent(
-          callId: callId,
-          name: toolName,
-          executionTarget: executionTarget,
-        ),
-      );
-
       Object? rawArguments = functionCall["args"];
       Map<String, Object?> arguments =
           _castObjectMap(rawArguments) ?? <String, Object?>{};
-      ToolExecutionResult output = await toolRegistry.executeObject(
+      ToolExecutionInvocation invocation = toolExecutionBridge.createInvocation(
         callId: callId,
         name: toolName,
+      );
+      ToolExecutionResult output = await invocation.executeObject(
         arguments: arguments,
       );
 
@@ -342,15 +329,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
         "response": output.outputObject,
       });
 
-      await onJsonEvent(
-        RealtimeToolCompletedEvent(
-          callId: callId,
-          name: toolName,
-          executionTarget: output.executionTarget,
-          success: output.success,
-          error: output.error,
-        ),
-      );
+      await invocation.emitCompleted(output);
     }
 
     if (functionResponses.isEmpty) return;
@@ -361,10 +340,8 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   Future<void> _handleProviderErrorMessage(Map<String, Object?> error) async {
     warning("[gemini] provider error: ${jsonEncode(error)}");
-    await onJsonEvent(
-      RealtimeErrorEvent(
-        message: error["message"]?.toString() ?? "Gemini Live API error",
-      ),
+    await runtime.emitError(
+      message: error["message"]?.toString() ?? "Gemini Live API error",
     );
   }
 
@@ -375,16 +352,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
     setupFallbackTimer = null;
     currentSetupFallbackTimer?.cancel();
     info("[gemini] setup complete");
-    await onJsonEvent(
-      RealtimeSessionStartedEvent(
-        provider: RealtimeProviderCatalog.geminiId,
-        model: config.model,
-        voice: config.voice,
-        inputSampleRate: config.inputSampleRate,
-        outputSampleRate: 24000,
-      ),
-    );
-    await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+    await runtime.emitSessionStarted(outputSampleRate: 24000);
   }
 
   Future<void> _handleProviderDone() async {
@@ -394,10 +362,10 @@ class GeminiLiveSession implements RealtimeProviderSession {
     info("[gemini] websocket done code=$closeCode reason=$closeReason");
     _logResponseFinished(reason: "socket.done");
     if (!sessionStarted && (closeReason?.isNotEmpty ?? false)) {
-      await onJsonEvent(RealtimeErrorEvent(message: closeReason!));
+      await runtime.emitError(message: closeReason!);
     }
     await close();
-    await onClosed();
+    await runtime.notifyClosed();
   }
 
   void _handleSetupFallbackTimeout() {
@@ -409,9 +377,9 @@ class GeminiLiveSession implements RealtimeProviderSession {
   Future<void> _handleProviderError(Object error) async {
     warning("[gemini] websocket error: $error");
     _logResponseFinished(reason: "socket.error");
-    await onJsonEvent(RealtimeErrorEvent(message: error.toString()));
+    await runtime.emitError(message: error.toString());
     await close();
-    await onClosed();
+    await runtime.notifyClosed();
   }
 
   Future<void> _sendProviderEvent(Map<String, Object?> payload) async {
@@ -439,13 +407,13 @@ class GeminiLiveSession implements RealtimeProviderSession {
       speechActive = false;
       silentDurationMs = 0;
       loudDurationMs = 0;
-      lastActivityEndAtMs = _debugNowMs();
+      lastActivityEndAtMs = runtime.nowMs;
       info(
         "[gemini] user turn #$userTurnCount speech stopped at ${lastActivityEndAtMs}ms "
         "speechDuration=${currentSpeechDurationMs}ms chunks=$currentSpeechChunkCount "
         "silenceWindow=${config.turnDetection.speechEndSilenceMs}ms",
       );
-      await onJsonEvent(const RealtimeInputSpeechStoppedEvent());
+      await runtime.emitSpeechStopped();
       await _sendProviderEvent(<String, Object?>{
         "realtimeInput": <String, Object?>{"activityEnd": <String, Object?>{}},
       });
@@ -470,13 +438,12 @@ class GeminiLiveSession implements RealtimeProviderSession {
     loudDurationMs = 0;
     currentSpeechDurationMs = bufferedSpeechLeadInDurationMs;
     currentSpeechChunkCount = bufferedSpeechLeadIn.length;
-    userTranscriptFinalizedForCurrentTurn = false;
-    pendingUserTranscript = "";
+    userTranscriptBuffer.startTurn();
     info(
-      "[gemini] user turn #$userTurnCount speech started at ${_debugNowMs()}ms "
+      "[gemini] user turn #$userTurnCount speech started at ${runtime.nowMs}ms "
       "leadIn=${bufferedSpeechLeadInDurationMs}ms bufferedChunks=${bufferedSpeechLeadIn.length}",
     );
-    await onJsonEvent(const RealtimeInputSpeechStartedEvent());
+    await runtime.emitSpeechStarted();
     await _sendProviderEvent(<String, Object?>{
       "realtimeInput": <String, Object?>{"activityStart": <String, Object?>{}},
     });
@@ -557,53 +524,40 @@ class GeminiLiveSession implements RealtimeProviderSession {
     required String text,
     required String speaker,
   }) async {
-    if (speaker == "user" && userTranscriptFinalizedForCurrentTurn) return;
-    if (speaker == "assistant" && assistantTranscriptFinalizedForCurrentTurn) {
+    MonotonicTranscriptBuffer buffer = speaker == "assistant"
+        ? assistantTranscriptBuffer
+        : userTranscriptBuffer;
+    String? delta = buffer.applySnapshot(text);
+    if (delta == null) return;
+
+    if (speaker == "assistant") {
+      await runtime.onJsonEvent(
+        RealtimeTranscriptAssistantDeltaEvent(text: delta),
+      );
       return;
     }
 
-    String previous = speaker == "assistant"
-        ? pendingAssistantTranscript
-        : pendingUserTranscript;
-    if (text.isEmpty || text == previous) return;
-
-    String delta = text.startsWith(previous)
-        ? text.substring(previous.length)
-        : text;
-    if (speaker == "assistant") {
-      pendingAssistantTranscript = text;
-    } else {
-      pendingUserTranscript = text;
-    }
-
-    if (speaker == "assistant") {
-      await onJsonEvent(RealtimeTranscriptAssistantDeltaEvent(text: delta));
-      return;
-    }
-
-    await onJsonEvent(RealtimeTranscriptUserDeltaEvent(text: delta));
+    await runtime.onJsonEvent(RealtimeTranscriptUserDeltaEvent(text: delta));
   }
 
   Future<void> _flushPendingTranscripts() async {
-    if (pendingUserTranscript.isNotEmpty) {
-      await onJsonEvent(
-        RealtimeTranscriptUserFinalEvent(text: pendingUserTranscript),
+    String? userTranscript = userTranscriptBuffer.finalizeText();
+    if (userTranscript != null) {
+      await runtime.onJsonEvent(
+        RealtimeTranscriptUserFinalEvent(text: userTranscript),
       );
-      userTranscriptFinalizedForCurrentTurn = true;
-      pendingUserTranscript = "";
     }
 
-    if (pendingAssistantTranscript.isNotEmpty) {
-      if (assistantTurnInterrupted) {
-        assistantTranscriptFinalizedForCurrentTurn = true;
-        pendingAssistantTranscript = "";
-        return;
-      }
-      await onJsonEvent(
-        RealtimeTranscriptAssistantFinalEvent(text: pendingAssistantTranscript),
+    if (assistantTurnInterrupted) {
+      assistantTranscriptBuffer.discard();
+      return;
+    }
+
+    String? assistantTranscript = assistantTranscriptBuffer.finalizeText();
+    if (assistantTranscript != null) {
+      await runtime.onJsonEvent(
+        RealtimeTranscriptAssistantFinalEvent(text: assistantTranscript),
       );
-      assistantTranscriptFinalizedForCurrentTurn = true;
-      pendingAssistantTranscript = "";
     }
   }
 
@@ -631,28 +585,25 @@ class GeminiLiveSession implements RealtimeProviderSession {
     };
   }
 
-  int _debugNowMs() => debugClock.elapsedMilliseconds;
-
-  String _formatLatency(int currentMs, int startedAtMs) {
-    if (startedAtMs < 0) {
-      return "n/a";
-    }
-    return "${currentMs - startedAtMs}ms";
-  }
-
   void _logResponseFinished({String reason = "turnComplete"}) {
     if (assistantTurnCount == 0 || responseStartedAtMs < 0) {
       return;
     }
-    int finishedAtMs = _debugNowMs();
-    String responseDuration = _formatLatency(finishedAtMs, responseStartedAtMs);
+    int finishedAtMs = runtime.nowMs;
+    String responseDuration = ProviderDebugTiming.formatLatency(
+      currentMs: finishedAtMs,
+      startedAtMs: responseStartedAtMs,
+    );
     String firstAudioLatency = firstAudioAtMs < 0
         ? "n/a"
-        : _formatLatency(firstAudioAtMs, responseStartedAtMs);
+        : ProviderDebugTiming.formatLatency(
+            currentMs: firstAudioAtMs,
+            startedAtMs: responseStartedAtMs,
+          );
     info(
       "[gemini] assistant turn #$assistantTurnCount finished via $reason at ${finishedAtMs}ms "
       "duration=$responseDuration firstAudio=$firstAudioLatency audioChunks=$responseAudioChunkCount "
-      "assistantTextLength=${pendingAssistantTranscript.length} userTextLength=${pendingUserTranscript.length}",
+      "assistantTextLength=${assistantTranscriptBuffer.length} userTextLength=${userTranscriptBuffer.length}",
     );
     responseStartedAtMs = -1;
     firstAudioAtMs = -1;
