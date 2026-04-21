@@ -3,6 +3,9 @@ class TranscriptTimeline {
 
   void clear() => entries = <TranscriptEntry>[];
 
+  bool hasPendingEntry(TranscriptSpeaker speaker) =>
+      _findMostRecentPendingEntryIndex(speaker) != -1;
+
   void beginPendingEntry(TranscriptSpeaker speaker) {
     if (_findMostRecentPendingEntryIndex(speaker) != -1) return;
 

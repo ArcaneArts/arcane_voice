@@ -46,6 +46,8 @@ class CallSessionController extends ChangeNotifier {
   int assistantFirstAudioAtMs = -1;
   int assistantAudioChunkCount = 0;
   int assistantTranscriptDeltaCount = 0;
+  bool userSpeechActive = false;
+  List<String> pendingSystemEntries = <String>[];
   String sessionState = "idle";
   String serverUrl;
   RealtimeProviderDefinition providerOption = RealtimeProviderCatalog.openAi;
@@ -190,6 +192,7 @@ class CallSessionController extends ChangeNotifier {
     callActive = false;
     sessionState = "connecting";
     transcriptTimeline.clear();
+    pendingSystemEntries = <String>[];
     socketEventQueue = Future<void>.value();
     debugClock
       ..reset()
@@ -223,12 +226,20 @@ class CallSessionController extends ChangeNotifier {
     assistantFirstAudioAtMs = -1;
     assistantAudioChunkCount = 0;
     assistantTranscriptDeltaCount = 0;
+    userSpeechActive = false;
+    pendingSystemEntries = <String>[];
   }
 
   int _debugNowMs() => debugClock.elapsedMilliseconds;
 
   void _ensureAssistantTurnStarted({required String trigger}) {
-    if (activeAssistantTurn != 0) return;
+    bool flushedSystemEntries = _flushPendingSystemEntries();
+    if (activeAssistantTurn != 0) {
+      if (flushedSystemEntries) {
+        _safeNotifyListeners();
+      }
+      return;
+    }
     assistantTurnCount++;
     activeAssistantTurn = assistantTurnCount;
     assistantTurnStartedAtMs = _debugNowMs();
@@ -242,12 +253,12 @@ class CallSessionController extends ChangeNotifier {
       "[client] assistant turn #$activeAssistantTurn started via $trigger at ${assistantTurnStartedAtMs}ms "
       "after user stop ${thinkLatencyMs < 0 ? 'n/a' : '${thinkLatencyMs}ms'}",
     );
+    if (flushedSystemEntries) {
+      _safeNotifyListeners();
+    }
   }
 
-  void _finishAssistantTurn({
-    required String reason,
-    String? transcript,
-  }) {
+  void _finishAssistantTurn({required String reason, String? transcript}) {
     if (activeAssistantTurn == 0) return;
     int finishedAtMs = _debugNowMs();
     int responseDurationMs = assistantTurnStartedAtMs < 0
@@ -282,6 +293,30 @@ class CallSessionController extends ChangeNotifier {
     info("[client] system note: $text");
     transcriptTimeline.appendSystemEntry(text);
     _safeNotifyListeners();
+  }
+
+  void _appendOrQueueSystemEntry(String text) {
+    if (transcriptTimeline.hasPendingEntry(TranscriptSpeaker.user)) {
+      info("[client] system note queued until user transcript final: $text");
+      pendingSystemEntries = <String>[...pendingSystemEntries, text];
+      return;
+    }
+
+    _appendSystemEntry(text);
+  }
+
+  bool _flushPendingSystemEntries() {
+    if (pendingSystemEntries.isEmpty) {
+      return false;
+    }
+
+    List<String> bufferedEntries = pendingSystemEntries;
+    pendingSystemEntries = <String>[];
+    for (String text in bufferedEntries) {
+      info("[client] system note: $text");
+      transcriptTimeline.appendSystemEntry(text);
+    }
+    return true;
   }
 
   void _safeNotifyListeners() {

@@ -99,6 +99,11 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     }
 
     if (payload is RealtimeInputSpeechStoppedEvent) {
+      if (!userSpeechActive) {
+        info("[client] duplicate speech stopped ignored at ${_debugNowMs()}ms");
+        return;
+      }
+      userSpeechActive = false;
       int stoppedAtMs = _debugNowMs();
       int durationMs = userSpeechStartedAtMs < 0
           ? -1
@@ -130,6 +135,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
       info(
         "[client] user turn #$userTurnCount transcript final length=${payload.text.length}",
       );
+      _flushPendingSystemEntries();
       _safeNotifyListeners();
       return;
     }
@@ -150,7 +156,6 @@ extension CallSessionControllerSocketHandling on CallSessionController {
         speaker: TranscriptSpeaker.assistant,
         text: payload.text,
       );
-      _finishAssistantTurn(reason: "transcript.final", transcript: payload.text);
       _safeNotifyListeners();
       return;
     }
@@ -162,8 +167,26 @@ extension CallSessionControllerSocketHandling on CallSessionController {
       return;
     }
 
+    if (payload is RealtimeAssistantOutputCompletedEvent) {
+      String? transcript;
+      for (
+        int index = transcriptTimeline.entries.length - 1;
+        index >= 0;
+        index--
+      ) {
+        TranscriptEntry entry = transcriptTimeline.entries[index];
+        if (entry.speaker == TranscriptSpeaker.assistant) {
+          transcript = entry.text;
+          break;
+        }
+      }
+      _finishAssistantTurn(reason: payload.reason, transcript: transcript);
+      _safeNotifyListeners();
+      return;
+    }
+
     if (payload is RealtimeToolStartedEvent) {
-      _appendSystemEntry(
+      _appendOrQueueSystemEntry(
         "Running ${payload.executionTarget} tool ${payload.name}...",
       );
       return;
@@ -172,7 +195,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     if (payload is RealtimeToolCompletedEvent) {
       String status = payload.success ? "Finished" : "Failed";
       String suffix = payload.error == null ? "." : ": ${payload.error}";
-      _appendSystemEntry(
+      _appendOrQueueSystemEntry(
         "$status ${payload.executionTarget} tool ${payload.name}$suffix",
       );
       return;
@@ -193,7 +216,9 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     }
   }
 
-  Future<void> _handleSessionStarted(RealtimeSessionStartedEvent payload) async {
+  Future<void> _handleSessionStarted(
+    RealtimeSessionStartedEvent payload,
+  ) async {
     int inputSampleRate = payload.inputSampleRate;
     int outputSampleRate = payload.outputSampleRate;
     info(
@@ -215,6 +240,11 @@ extension CallSessionControllerSocketHandling on CallSessionController {
   }
 
   Future<void> _handleSpeechStarted() async {
+    if (userSpeechActive) {
+      info("[client] duplicate speech started ignored at ${_debugNowMs()}ms");
+      return;
+    }
+    userSpeechActive = true;
     userTurnCount++;
     userSpeechStartedAtMs = _debugNowMs();
     info(
@@ -238,6 +268,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     await playbackService.reset();
     await _closeSocket();
     _setInactiveState(state: lastError.isEmpty ? "idle" : sessionState);
+    _flushPendingSystemEntries();
     _safeNotifyListeners();
   }
 
@@ -257,6 +288,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     await captureService.stop();
     await playbackService.reset();
     await _closeSocket();
+    _flushPendingSystemEntries();
     _appendSystemEntry(message);
     _safeNotifyListeners();
   }

@@ -25,6 +25,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
   int downstreamAudioChunkCount = 0;
   bool speechActive = false;
   bool responseActive = false;
+  bool assistantOutputActive = false;
   bool audioBufferedForCurrentTurn = false;
   int silentDurationMs = 0;
   int loudDurationMs = 0;
@@ -152,9 +153,9 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
     if (type == "response.created") {
       responseActive = true;
+      assistantOutputActive = false;
       await _flushPendingUserTranscript();
       info("[grok] response created");
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
       return;
     }
 
@@ -162,20 +163,24 @@ class GrokVoiceSession implements RealtimeProviderSession {
       responseActive = false;
       await _flushPendingUserTranscript();
       info("[grok] response done");
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      if (assistantOutputActive) {
+        await onJsonEvent(
+          const RealtimeAssistantOutputCompletedEvent(reason: "response.done"),
+        );
+        await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      } else {
+        info("[grok] response done without assistant output");
+      }
+      assistantOutputActive = false;
       return;
     }
 
     if (type == "input_audio_buffer.speech_started") {
       pendingUserTranscript = "";
-      info("[grok] speech started");
-      await onJsonEvent(const RealtimeInputSpeechStartedEvent());
       return;
     }
 
     if (type == "input_audio_buffer.speech_stopped") {
-      info("[grok] speech stopped");
-      await onJsonEvent(const RealtimeInputSpeechStoppedEvent());
       return;
     }
 
@@ -187,6 +192,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
     if (type == "response.output_audio.delta") {
       String delta = event["delta"]?.toString() ?? "";
       if (delta.isEmpty) return;
+      await _ensureAssistantOutputStarted();
 
       downstreamAudioChunkCount++;
       if (downstreamAudioChunkCount == 1 ||
@@ -199,6 +205,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
     if (type == "response.output_audio_transcript.delta" ||
         type == "response.text.delta") {
+      await _ensureAssistantOutputStarted();
       await onJsonEvent(
         RealtimeTranscriptAssistantDeltaEvent(
           text: event["delta"]?.toString() ?? "",
@@ -208,6 +215,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
     }
 
     if (type == "response.output_audio_transcript.done") {
+      await _ensureAssistantOutputStarted();
       info("[grok] assistant transcript final");
       await onJsonEvent(
         RealtimeTranscriptAssistantFinalEvent(
@@ -377,7 +385,9 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   void _logProviderEvent(String type, Map<String, Object?> event) {
     if (_isStreamingDeltaEvent(type) ||
-        type == "conversation.item.input_audio_transcription.completed") {
+        type == "conversation.item.input_audio_transcription.completed" ||
+        type == "input_audio_buffer.speech_started" ||
+        type == "input_audio_buffer.speech_stopped") {
       return;
     }
 
@@ -432,6 +442,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
     if (responseActive && config.turnDetection.bargeInEnabled) {
       info("[grok] cancelling active response for new user speech");
       responseActive = false;
+      assistantOutputActive = false;
       await interrupt();
     }
     info("[grok] proxy speech started");
@@ -480,5 +491,13 @@ class GrokVoiceSession implements RealtimeProviderSession {
     });
     info("[grok] response.create sent");
     await _sendProviderEvent(<String, Object?>{"type": "response.create"});
+  }
+
+  Future<void> _ensureAssistantOutputStarted() async {
+    if (assistantOutputActive) {
+      return;
+    }
+    assistantOutputActive = true;
+    await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
   }
 }

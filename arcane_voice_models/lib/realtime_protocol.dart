@@ -34,6 +34,7 @@ class RealtimeProtocolCodec {
         RealtimeTranscriptAssistantDeltaEvent value => value.to.json,
         RealtimeTranscriptAssistantFinalEvent value => value.to.json,
         RealtimeTranscriptAssistantDiscardEvent value => value.to.json,
+        RealtimeAssistantOutputCompletedEvent value => value.to.json,
         RealtimeToolStartedEvent value => value.to.json,
         RealtimeToolCompletedEvent value => value.to.json,
         RealtimeToolCallEvent value => value.to.json,
@@ -94,6 +95,8 @@ class RealtimeProtocolCodec {
         $RealtimeTranscriptAssistantFinalEvent.fromMap(map),
       RealtimeMessageType.transcriptAssistantDiscard =>
         $RealtimeTranscriptAssistantDiscardEvent.fromMap(map),
+      RealtimeMessageType.assistantOutputCompleted =>
+        $RealtimeAssistantOutputCompletedEvent.fromMap(map),
       RealtimeMessageType.toolStarted => $RealtimeToolStartedEvent.fromMap(map),
       RealtimeMessageType.toolCompleted => $RealtimeToolCompletedEvent.fromMap(
         map,

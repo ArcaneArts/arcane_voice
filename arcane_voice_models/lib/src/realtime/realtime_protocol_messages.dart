@@ -25,6 +25,7 @@ class RealtimeMessageType {
   static const String transcriptAssistantFinal = "transcript.assistant.final";
   static const String transcriptAssistantDiscard =
       "transcript.assistant.discard";
+  static const String assistantOutputCompleted = "assistant.output.completed";
   static const String toolStarted = "tool.started";
   static const String toolCompleted = "tool.completed";
   static const String toolCall = "tool.call";
@@ -295,6 +296,18 @@ class RealtimeTranscriptAssistantDiscardEvent implements RealtimeServerMessage {
 
   const RealtimeTranscriptAssistantDiscardEvent({
     this.type = RealtimeMessageType.transcriptAssistantDiscard,
+  });
+}
+
+@artifact
+class RealtimeAssistantOutputCompletedEvent implements RealtimeServerMessage {
+  @override
+  final String type;
+  final String reason;
+
+  const RealtimeAssistantOutputCompletedEvent({
+    this.type = RealtimeMessageType.assistantOutputCompleted,
+    this.reason = "completed",
   });
 }
 

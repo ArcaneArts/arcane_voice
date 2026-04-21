@@ -243,6 +243,9 @@ class GeminiLiveSession implements RealtimeProviderSession {
       await _flushPendingTranscripts();
       responseActive = false;
       assistantTurnInterrupted = false;
+      await onJsonEvent(
+        const RealtimeAssistantOutputCompletedEvent(reason: "turnComplete"),
+      );
       await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
     }
   }

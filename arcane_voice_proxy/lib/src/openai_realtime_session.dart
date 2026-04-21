@@ -26,6 +26,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   int downstreamAudioChunkCount = 0;
   bool speechActive = false;
   bool responseActive = false;
+  bool assistantOutputActive = false;
   int silentDurationMs = 0;
   int loudDurationMs = 0;
   int bufferedSpeechLeadInDurationMs = 0;
@@ -171,34 +172,33 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
     if (type == "response.created") {
       responseActive = true;
-      assistantTurnCount++;
-      responseStartedAtMs = _debugNowMs();
-      firstAudioAtMs = -1;
-      responseAudioChunkCount = 0;
-      info(
-        "[openai] assistant turn #$assistantTurnCount response created at ${responseStartedAtMs}ms "
-        "after commit ${_formatLatencyFromCommit()}",
-      );
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
+      assistantOutputActive = false;
+      info("[openai] response created at ${_debugNowMs()}ms");
       return;
     }
 
     if (type == "response.done") {
       responseActive = false;
-      _logResponseFinished();
-      await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      if (assistantOutputActive) {
+        _logResponseFinished();
+        await onJsonEvent(
+          const RealtimeAssistantOutputCompletedEvent(reason: "response.done"),
+        );
+        await onJsonEvent(const RealtimeSessionStateEvent(state: "ready"));
+      } else {
+        info("[openai] response done without assistant output");
+      }
+      assistantOutputActive = false;
       return;
     }
 
     if (type == "input_audio_buffer.speech_started") {
       info("[openai] speech started");
-      await onJsonEvent(const RealtimeInputSpeechStartedEvent());
       return;
     }
 
     if (type == "input_audio_buffer.speech_stopped") {
       info("[openai] speech stopped");
-      await onJsonEvent(const RealtimeInputSpeechStoppedEvent());
       return;
     }
 
@@ -206,6 +206,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
         type == "response.audio.delta") {
       String delta = event["delta"]?.toString() ?? "";
       if (delta.isEmpty) return;
+      await _ensureAssistantOutputStarted(trigger: "audio");
       downstreamAudioChunkCount++;
       responseAudioChunkCount++;
       if (firstAudioAtMs < 0) {
@@ -225,6 +226,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
     if (type == "response.output_audio_transcript.delta" ||
         type == "response.audio_transcript.delta") {
+      await _ensureAssistantOutputStarted(trigger: "transcript");
       await onJsonEvent(
         RealtimeTranscriptAssistantDeltaEvent(
           text: event["delta"]?.toString() ?? "",
@@ -235,6 +237,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
     if (type == "response.output_audio_transcript.done" ||
         type == "response.audio_transcript.done") {
+      await _ensureAssistantOutputStarted(trigger: "transcript.final");
       info("[openai] assistant transcript final");
       await onJsonEvent(
         RealtimeTranscriptAssistantFinalEvent(
@@ -270,6 +273,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     }
 
     if (type == "response.output_text.delta") {
+      await _ensureAssistantOutputStarted(trigger: "text");
       await onJsonEvent(
         RealtimeTranscriptAssistantDeltaEvent(
           text: event["delta"]?.toString() ?? "",
@@ -279,6 +283,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     }
 
     if (type == "response.output_text.done") {
+      await _ensureAssistantOutputStarted(trigger: "text.final");
       await onJsonEvent(
         RealtimeTranscriptAssistantFinalEvent(
           text: event["text"]?.toString() ?? "",
@@ -463,7 +468,10 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     if (responseActive && config.turnDetection.bargeInEnabled) {
       info("[openai] cancelling active response for new user speech");
       responseActive = false;
-      _logResponseFinished(reason: "barge-in");
+      if (assistantOutputActive) {
+        _logResponseFinished(reason: "barge-in");
+      }
+      assistantOutputActive = false;
       await interrupt();
     }
     info(
@@ -543,7 +551,9 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   }
 
   void _logResponseFinished({String reason = "response.done"}) {
-    if (assistantTurnCount == 0 || responseStartedAtMs < 0) {
+    if (!assistantOutputActive ||
+        assistantTurnCount == 0 ||
+        responseStartedAtMs < 0) {
       return;
     }
     int finishedAtMs = _debugNowMs();
@@ -558,5 +568,21 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     responseStartedAtMs = -1;
     firstAudioAtMs = -1;
     responseAudioChunkCount = 0;
+  }
+
+  Future<void> _ensureAssistantOutputStarted({required String trigger}) async {
+    if (assistantOutputActive) {
+      return;
+    }
+    assistantOutputActive = true;
+    assistantTurnCount++;
+    responseStartedAtMs = _debugNowMs();
+    firstAudioAtMs = -1;
+    responseAudioChunkCount = 0;
+    info(
+      "[openai] assistant turn #$assistantTurnCount output started via $trigger at ${responseStartedAtMs}ms "
+      "after commit ${_formatLatencyFromCommit()}",
+    );
+    await onJsonEvent(const RealtimeSessionStateEvent(state: "responding"));
   }
 }
