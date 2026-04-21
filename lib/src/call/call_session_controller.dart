@@ -23,7 +23,7 @@ class CallSessionController extends ChangeNotifier {
   final AudioCaptureService captureService;
   final AudioPlaybackService playbackService;
   final TranscriptTimeline transcriptTimeline;
-  final ClientToolRegistry clientToolRegistry;
+  final ArcaneVoiceClientToolRegistry clientToolRegistry;
   final Stopwatch debugClock = Stopwatch();
 
   StreamSubscription<RealtimeSocketEvent>? socketSubscription;
@@ -54,6 +54,9 @@ class CallSessionController extends ChangeNotifier {
   RealtimeProviderDefinition providerOption = RealtimeProviderCatalog.openAi;
   String model = RealtimeProviderCatalog.openAi.defaultModel;
   String voice = RealtimeProviderCatalog.openAi.defaultVoice;
+  String instructions;
+  String initialGreeting = "";
+  String sessionContextJson;
   String providerOptionsJson = "{}";
   String lastError = "";
   RealtimeTurnDetectionConfig turnDetectionConfig =
@@ -64,14 +67,19 @@ class CallSessionController extends ChangeNotifier {
     AudioCaptureService? captureService,
     AudioPlaybackService? playbackService,
     TranscriptTimeline? transcriptTimeline,
-    ClientToolRegistry? clientToolRegistry,
+    ArcaneVoiceClientToolRegistry? clientToolRegistry,
     String? serverUrl,
+    String? instructions,
+    String? sessionContextJson,
   }) : socketClient = socketClient ?? RealtimeSocketClient(),
        captureService = captureService ?? AudioCaptureService(),
        playbackService = playbackService ?? AudioPlaybackService(),
        transcriptTimeline = transcriptTimeline ?? TranscriptTimeline(),
-       clientToolRegistry = clientToolRegistry ?? ClientToolRegistry(),
-       serverUrl = serverUrl ?? RealtimeServerUrl.defaultUrl;
+       clientToolRegistry =
+           clientToolRegistry ?? ArcaneVoiceClientToolRegistry(),
+       serverUrl = serverUrl ?? RealtimeServerUrl.defaultUrl,
+       instructions = instructions ?? defaultInstructions,
+       sessionContextJson = sessionContextJson ?? "{}";
 
   bool get canStart => !connecting && !callActive;
 
@@ -128,11 +136,35 @@ class CallSessionController extends ChangeNotifier {
     _safeNotifyListeners();
   }
 
+  void onInstructionsChanged(String nextValue) {
+    if (connecting || callActive || instructions == nextValue) return;
+
+    instructions = nextValue;
+    info("[client] instructions updated");
+    _safeNotifyListeners();
+  }
+
+  void onSessionContextJsonChanged(String nextValue) {
+    if (connecting || callActive || sessionContextJson == nextValue) return;
+
+    sessionContextJson = nextValue;
+    info("[client] session context updated");
+    _safeNotifyListeners();
+  }
+
   void onProviderOptionsJsonChanged(String nextValue) {
     if (connecting || callActive || providerOptionsJson == nextValue) return;
 
     providerOptionsJson = nextValue;
     info("[client] provider options updated");
+    _safeNotifyListeners();
+  }
+
+  void onInitialGreetingChanged(String nextValue) {
+    if (connecting || callActive || initialGreeting == nextValue) return;
+
+    initialGreeting = nextValue;
+    info("[client] initial greeting updated");
     _safeNotifyListeners();
   }
 
@@ -166,7 +198,9 @@ class CallSessionController extends ChangeNotifier {
           provider: providerOption.id,
           model: model,
           voice: voice,
-          instructions: defaultInstructions,
+          instructions: instructions,
+          initialGreeting: initialGreeting,
+          sessionContextJson: sessionContextJson,
           providerOptionsJson: providerOptionsJson,
           inputSampleRate: 24000,
           outputSampleRate: 24000,

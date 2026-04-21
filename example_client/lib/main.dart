@@ -18,9 +18,10 @@ class _ArcanaAppState extends State<ArcanaApp> {
 
   @override
   void initState() {
-    ClientToolRegistry clientToolRegistry = ClientToolRegistry(
-      tools: <ClientTool>[
-        ClientTool.jsonSchema(
+    ArcaneVoiceClientToolRegistry
+    clientToolRegistry = ArcaneVoiceClientToolRegistry(
+      tools: <ArcaneVoiceClientTool>[
+        ArcaneVoiceClientTool.jsonSchema(
           name: "secretCode",
           description:
               "Return the secret access code for smoke testing client-side tool calling.",
@@ -33,7 +34,10 @@ class _ArcanaAppState extends State<ArcanaApp> {
         ),
       ],
     );
-    controller = CallSessionController(clientToolRegistry: clientToolRegistry);
+    controller = CallSessionController(
+      clientToolRegistry: clientToolRegistry,
+      sessionContextJson: '{"demo":{"caller":"example-client"}}',
+    );
     super.initState();
   }
 

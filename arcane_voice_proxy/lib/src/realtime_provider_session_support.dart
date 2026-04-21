@@ -18,6 +18,8 @@ class RealtimeSessionConfig {
   final String model;
   final String voice;
   final String instructions;
+  final String initialGreeting;
+  final String sessionContextJson;
   final String providerOptionsJson;
   final int inputSampleRate;
   final int outputSampleRate;
@@ -27,6 +29,8 @@ class RealtimeSessionConfig {
     required this.model,
     required this.voice,
     required this.instructions,
+    required this.initialGreeting,
+    required this.sessionContextJson,
     required this.providerOptionsJson,
     required this.inputSampleRate,
     required this.outputSampleRate,
@@ -39,6 +43,8 @@ class RealtimeSessionConfig {
     model: request.model,
     voice: request.voice,
     instructions: request.instructions,
+    initialGreeting: request.initialGreeting,
+    sessionContextJson: request.sessionContextJson,
     providerOptionsJson: request.providerOptionsJson,
     inputSampleRate: request.inputSampleRate,
     outputSampleRate: request.outputSampleRate,
@@ -49,6 +55,8 @@ class RealtimeSessionConfig {
     String? model,
     String? voice,
     String? instructions,
+    String? initialGreeting,
+    String? sessionContextJson,
     String? providerOptionsJson,
     int? inputSampleRate,
     int? outputSampleRate,
@@ -57,6 +65,8 @@ class RealtimeSessionConfig {
     model: model ?? this.model,
     voice: voice ?? this.voice,
     instructions: instructions ?? this.instructions,
+    initialGreeting: initialGreeting ?? this.initialGreeting,
+    sessionContextJson: sessionContextJson ?? this.sessionContextJson,
     providerOptionsJson: providerOptionsJson ?? this.providerOptionsJson,
     inputSampleRate: inputSampleRate ?? this.inputSampleRate,
     outputSampleRate: outputSampleRate ?? this.outputSampleRate,
@@ -75,4 +85,21 @@ class RealtimeSessionConfig {
     } catch (_) {}
     return <String, Object?>{};
   }
+
+  Map<String, Object?> get sessionContext {
+    try {
+      Object? decoded = jsonDecode(sessionContextJson);
+      if (decoded is Map<String, dynamic>) {
+        return decoded.cast<String, Object?>();
+      }
+      if (decoded is Map<String, Object?>) {
+        return decoded;
+      }
+    } catch (_) {}
+    return <String, Object?>{};
+  }
+
+  String get normalizedInitialGreeting => initialGreeting.trim();
+
+  bool get hasInitialGreeting => normalizedInitialGreeting.isNotEmpty;
 }

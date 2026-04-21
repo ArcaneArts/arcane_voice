@@ -76,6 +76,9 @@ class CallStatusCard extends StatelessWidget {
           >[
             const SizedBox(height: 12),
             ElevenLabsAgentIdField(controller: controller),
+          ] else ...<Widget>[
+            const SizedBox(height: 12),
+            InitialGreetingField(controller: controller),
           ],
           const SizedBox(height: 12),
           Wrap(
@@ -258,6 +261,28 @@ class ElevenLabsAgentIdField extends StatelessWidget {
       border: OutlineInputBorder(),
     ),
     onChanged: controller.onElevenLabsAgentIdChanged,
+  );
+}
+
+class InitialGreetingField extends StatelessWidget {
+  final CallSessionController controller;
+
+  const InitialGreetingField({super.key, required this.controller});
+
+  @override
+  Widget build(BuildContext context) => TextFormField(
+    key: ValueKey<String>(
+      "initial-greeting-${controller.provider}-${controller.initialGreeting}",
+    ),
+    initialValue: controller.initialGreeting,
+    enabled: !controller.callActive && !controller.connecting,
+    maxLines: 2,
+    decoration: const InputDecoration(
+      labelText: "Initial Greeting Prompt",
+      hintText: "Greet the caller warmly and ask how you can help.",
+      border: OutlineInputBorder(),
+    ),
+    onChanged: controller.onInitialGreetingChanged,
   );
 }
 

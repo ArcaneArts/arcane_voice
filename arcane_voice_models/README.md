@@ -1,31 +1,36 @@
 # arcane_voice_models
 
-Shared models and protocol helpers for the Arcane realtime voice client and
-proxy packages.
+Shared models and protocol helpers for the Arcane Voice client and proxy
+packages.
 
-This package is the source of truth for the client <-> proxy contract. It owns
+This package is the source of truth for the client-to-proxy contract. It owns
 the typed websocket control protocol, provider catalog metadata, shared
 turn-detection config, and the protocol codec used by both the Flutter client
 package and the proxy/server package.
 
-## What is in this package
+## What's New In 1.1.0
 
-- Artifact-backed realtime client and server message models
-- Shared provider definitions and default voice/model metadata
-- Shared turn detection config models
+- `RealtimeSessionStartRequest` now includes `sessionContextJson`.
+- Tool execution target naming is standardized on
+  `RealtimeToolExecutionTarget.arcaneVoiceProxy` and
+  `RealtimeToolExecutionTarget.arcaneVoiceClient`.
+
+## What Is In This Package
+
+- artifact-backed realtime client and server message models
+- shared provider definitions and default voice/model metadata
+- shared turn detection config models
 - `RealtimeProtocolCodec` for JSON encode/decode of control messages
 
-## What is not in this package
+## What Is Not In This Package
 
-- No audio capture or playback logic
-- No websocket client implementation
-- No proxy server or provider integrations
-- No UI widgets
+- no audio capture or playback logic
+- no websocket client implementation
+- no proxy server or provider integrations
+- no UI widgets
 
-Those live in
-[arcane_voice](/Users/cyberpwn/development/workspace/ArcaneArts/arcane_voice)
-and
-[arcane_voice_proxy](/Users/cyberpwn/development/workspace/ArcaneArts/arcane_voice/arcane_voice_proxy).
+Those live in [arcane_voice](https://pub.dev/packages/arcane_voice) and
+[arcane_voice_proxy](https://pub.dev/packages/arcane_voice_proxy).
 
 ## Getting Started
 
@@ -35,31 +40,41 @@ Import the package entrypoint:
 import 'package:arcane_voice_models/arcane_voice_models.dart';
 ```
 
-Use the codec for structured websocket control messages:
+Encode a typed session start request:
 
 ```dart
-String json = RealtimeProtocolCodec.encodeClientJson(
-  const RealtimePingRequest(),
+RealtimeSessionStartRequest request = RealtimeSessionStartRequest(
+  provider: RealtimeProviderCatalog.openAiId,
+  model: RealtimeProviderCatalog.openAi.defaultModel,
+  voice: RealtimeProviderCatalog.openAi.defaultVoice,
+  instructions: 'Be brief and warm.',
+  sessionContextJson: '{"scope":{"recordId":"rec_123"}}',
+  clientTools: const <RealtimeToolDefinition>[],
 );
 
-RealtimeServerMessage message =
-    RealtimeProtocolCodec.decodeServerJson(source);
+String source = RealtimeProtocolCodec.encodeClientJson(request);
 ```
 
-Provider metadata is shared here as well:
+Decode server events:
 
 ```dart
-RealtimeProviderDefinition provider = RealtimeProviderCatalog.gemini;
-String defaultVoice = provider.defaultVoice;
+RealtimeServerMessage message =
+    RealtimeProtocolCodec.decodeServerJson(sourceFromSocket);
 ```
 
-## Wire format notes
+## Session Context
 
-- JSON messages cover structured control/config events only
-- audio is intentionally not modeled here and stays as raw binary websocket
-  frames
-- the goal is one stable protocol that multiple client and proxy packages can
-  share without duplicating JSON maps
+`sessionContextJson` is intentionally opaque to this package. It is transported
+verbatim so host applications can attach signed auth/session/scope data without
+teaching the protocol package about any product-specific user model.
+
+## Wire Format Notes
+
+- JSON messages cover structured control/config events only.
+- Audio is intentionally not modeled here and stays as raw binary websocket
+  frames.
+- The goal is one stable protocol shared by multiple clients and proxies
+  without duplicated JSON maps.
 
 ## Artifact Workflow
 
@@ -81,9 +96,7 @@ import 'package:arcane_voice_models/arcane_voice_models.dart';
 
 ## Package Relationships
 
-- [arcane_voice](/Users/cyberpwn/development/workspace/ArcaneArts/arcane_voice)
-  depends on this package for all typed client <-> proxy models
-- [arcane_voice_proxy](/Users/cyberpwn/development/workspace/ArcaneArts/arcane_voice/arcane_voice_proxy)
+- [arcane_voice](https://pub.dev/packages/arcane_voice)
+  depends on this package for all typed client-to-proxy models
+- [arcane_voice_proxy](https://pub.dev/packages/arcane_voice_proxy)
   depends on this package for the same protocol and provider metadata
-- the example apps depend on their runtime packages rather than on this package
-  directly

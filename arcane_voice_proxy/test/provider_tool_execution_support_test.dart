@@ -9,13 +9,13 @@ import 'package:test/test.dart';
 
 void main() {
   test(
-    'tool execution bridge emits start and completion for server tools',
+    'tool execution bridge emits start and completion for Arcane Voice proxy tools',
     () async {
       List<RealtimeServerMessage> events = <RealtimeServerMessage>[];
       ProxyToolRegistry toolRegistry = ProxyToolRegistry(
-        serverTools: ServerToolRegistry(
-          tools: <ServerTool>[
-            CallbackServerTool.jsonSchema(
+        proxyTools: ArcaneVoiceProxyToolRegistry(
+          tools: <ArcaneVoiceProxyTool>[
+            ArcaneVoiceProxyCallbackTool.jsonSchema(
               name: 'randomNumber',
               description: 'Return a test number.',
               parameters: <String, Object?>{
@@ -43,20 +43,23 @@ void main() {
       ToolExecutionResult output = await invocation.executeJson(
         rawArguments: '{}',
       );
-      await invocation.emitCompleted(output);
+      await invocation.emitCompleted(output, rawArguments: '{}');
 
       expect(output.success, isTrue);
       expect(output.outputJson, '42');
       expect(events.length, 2);
       expect(events[0], isA<RealtimeToolStartedEvent>());
-      expect((events[0] as RealtimeToolStartedEvent).executionTarget, 'server');
+      expect(
+        (events[0] as RealtimeToolStartedEvent).executionTarget,
+        RealtimeToolExecutionTarget.arcaneVoiceProxy,
+      );
       expect(events[1], isA<RealtimeToolCompletedEvent>());
       expect((events[1] as RealtimeToolCompletedEvent).success, isTrue);
     },
   );
 
   test(
-    'tool execution bridge reports client tools as client execution target',
+    'tool execution bridge reports client tools as Arcane Voice client execution target',
     () async {
       List<RealtimeServerMessage> events = <RealtimeServerMessage>[];
       ProxyToolRegistry toolRegistry = ProxyToolRegistry(
@@ -89,14 +92,17 @@ void main() {
       ToolExecutionResult output = await invocation.executeJson(
         rawArguments: '{}',
       );
-      await invocation.emitCompleted(output);
+      await invocation.emitCompleted(output, rawArguments: '{}');
 
       expect(output.success, isTrue);
       expect(output.outputJson, '"yolo42"');
-      expect((events[0] as RealtimeToolStartedEvent).executionTarget, 'client');
+      expect(
+        (events[0] as RealtimeToolStartedEvent).executionTarget,
+        RealtimeToolExecutionTarget.arcaneVoiceClient,
+      );
       expect(
         (events[1] as RealtimeToolCompletedEvent).executionTarget,
-        'client',
+        RealtimeToolExecutionTarget.arcaneVoiceClient,
       );
     },
   );
@@ -106,9 +112,9 @@ void main() {
     () async {
       List<RealtimeServerMessage> events = <RealtimeServerMessage>[];
       ProxyToolRegistry toolRegistry = ProxyToolRegistry(
-        serverTools: ServerToolRegistry(
-          tools: <ServerTool>[
-            CallbackServerTool.jsonSchema(
+        proxyTools: ArcaneVoiceProxyToolRegistry(
+          tools: <ArcaneVoiceProxyTool>[
+            ArcaneVoiceProxyCallbackTool.jsonSchema(
               name: 'explode',
               description: 'Throw an error.',
               parameters: <String, Object?>{
@@ -138,11 +144,63 @@ void main() {
       ToolExecutionResult output = await invocation.executeJson(
         rawArguments: '{}',
       );
-      await invocation.emitCompleted(output);
+      await invocation.emitCompleted(output, rawArguments: '{}');
 
       expect(output.success, isFalse);
       expect(output.error, contains('boom'));
       expect((events[1] as RealtimeToolCompletedEvent).success, isFalse);
+    },
+  );
+
+  test(
+    'tool execution bridge executeObjectToolCall emits result and lifecycle',
+    () async {
+      List<RealtimeServerMessage> events = <RealtimeServerMessage>[];
+      ProxyToolRegistry toolRegistry = ProxyToolRegistry(
+        proxyTools: ArcaneVoiceProxyToolRegistry(
+          tools: <ArcaneVoiceProxyTool>[
+            ArcaneVoiceProxyCallbackTool.jsonSchema(
+              name: 'echo',
+              description: 'Echo a payload.',
+              parameters: <String, Object?>{
+                'type': 'object',
+                'properties': <String, Object?>{
+                  'value': <String, Object?>{'type': 'string'},
+                },
+                'required': <String>['value'],
+              },
+              onExecute: (Map<String, Object?> arguments) async =>
+                  <String, Object?>{'value': arguments['value']},
+            ),
+          ],
+        ),
+      );
+      ProviderSessionRuntime runtime = _buildRuntime(
+        events: events,
+        toolRegistry: toolRegistry,
+      );
+      ProviderToolExecutionBridge bridge = ProviderToolExecutionBridge(
+        runtime: runtime,
+      );
+      ToolExecutionResult? result;
+
+      await bridge.executeObjectToolCall(
+        providerLabel: 'test-provider',
+        callId: 'call-4',
+        name: 'echo',
+        arguments: <String, Object?>{'value': 'hello'},
+        onResult: (ToolExecutionResult output) async {
+          result = output;
+        },
+      );
+
+      expect(result, isNotNull);
+      expect(result!.success, isTrue);
+      expect(result!.outputObject['value'], 'hello');
+      expect(events.length, 2);
+      expect(events[0], isA<RealtimeToolStartedEvent>());
+      expect(events[1], isA<RealtimeToolCompletedEvent>());
+      expect((events[1] as RealtimeToolCompletedEvent).success, isTrue);
     },
   );
 }
@@ -157,6 +215,8 @@ ProviderSessionRuntime _buildRuntime({
     model: 'test-model',
     voice: 'test-voice',
     instructions: 'test instructions',
+    initialGreeting: '',
+    sessionContextJson: '{}',
     providerOptionsJson: '{}',
     inputSampleRate: 24000,
     outputSampleRate: 24000,

@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
@@ -17,15 +16,14 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   late final ProviderToolExecutionBridge toolExecutionBridge;
   late final AssistantOutputLifecycle assistantOutput;
   late final ProxyTurnDetector turnDetector;
+  late final ProviderJsonSocketConnection connection;
 
-  WebSocket? socket;
-  StreamSubscription<dynamic>? subscription;
   bool sessionStarted = false;
-  bool isClosed = false;
   int upstreamAudioChunkCount = 0;
   int downstreamAudioChunkCount = 0;
   bool responseActive = false;
   int lastCommitAtMs = -1;
+  bool initialGreetingTriggered = false;
 
   OpenAiRealtimeSession({
     required this.apiKey,
@@ -34,6 +32,14 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
     required Future<void> Function() onClosed,
+    Future<void> Function(ArcaneVoiceProxyUsage usage)? onUsage,
+    Future<void> Function(
+      ToolExecutionResult result,
+      String rawArguments,
+      DateTime startedAt,
+      DateTime completedAt,
+    )?
+    onToolExecuted,
   }) {
     runtime = ProviderSessionRuntime(
       providerId: RealtimeProviderCatalog.openAiId,
@@ -43,10 +49,13 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
       onJsonEvent: onJsonEvent,
       onAudioChunk: onAudioChunk,
       onClosed: onClosed,
+      onUsage: onUsage,
+      onToolExecuted: onToolExecuted,
     );
     toolExecutionBridge = ProviderToolExecutionBridge(runtime: runtime);
     assistantOutput = AssistantOutputLifecycle(runtime: runtime);
     turnDetector = ProxyTurnDetector(runtime: runtime);
+    connection = ProviderJsonSocketConnection(providerLabel: "openai");
   }
 
   @override
@@ -59,24 +68,18 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     Uri uri = Uri.parse(
       "wss://api.openai.com/v1/realtime?model=${Uri.encodeQueryComponent(config.model)}",
     );
-    WebSocket providerSocket = await WebSocket.connect(
-      uri.toString(),
+    await connection.connect(
+      url: uri.toString(),
       headers: <String, Object>{
         "Authorization": "Bearer $apiKey",
         "OpenAI-Beta": "realtime=v1",
       },
+      onMessage: _handleProviderMessage,
+      onDone: _handleProviderDone,
+      onError: _handleProviderError,
     );
 
     info("[openai] websocket connected");
-    providerSocket.pingInterval = const Duration(seconds: 20);
-    socket = providerSocket;
-    subscription = providerSocket.listen(
-      _handleProviderMessage,
-      onDone: _handleProviderDone,
-      onError: _handleProviderError,
-      cancelOnError: true,
-    );
-
     await _sendProviderEvent(<String, Object?>{
       "type": "session.update",
       "session": _buildSessionUpdate(),
@@ -86,7 +89,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendAudio(Uint8List audioBytes) async {
-    if (isClosed) return;
+    if (connection.isClosed) return;
     upstreamAudioChunkCount++;
     if (upstreamAudioChunkCount <= 5 ||
         upstreamAudioChunkCount % audioLogInterval == 0) {
@@ -104,7 +107,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendText(String text) async {
-    if (isClosed) return;
+    if (connection.isClosed) return;
     info("[openai] sending text input: $text");
 
     await _sendProviderEvent(<String, Object?>{
@@ -132,21 +135,12 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
   @override
   Future<void> close() async {
-    if (isClosed) return;
-    isClosed = true;
-    info("[openai] closing realtime session");
-    StreamSubscription<dynamic>? currentSubscription = subscription;
-    WebSocket? currentSocket = socket;
-    subscription = null;
-    socket = null;
-    await currentSubscription?.cancel();
-    await currentSocket?.close();
+    await connection.close(closeMessage: "closing realtime session");
   }
 
   Future<void> _handleProviderMessage(dynamic message) async {
-    if (message is! String) return;
-
-    Map<String, Object?> event = JsonCodecHelper.decodeObject(message);
+    Map<String, Object?>? event = decodeProviderJsonMessage(message);
+    if (event == null) return;
     String type = event["type"]?.toString() ?? "";
     _logProviderEvent(type, event);
 
@@ -167,6 +161,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     }
 
     if (type == "response.done") {
+      await _emitUsageFromResponseDone(event);
       responseActive = false;
       if (assistantOutput.isActive) {
         await assistantOutput.completeAndNotify(reason: "response.done");
@@ -290,46 +285,32 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   }
 
   Future<void> _handleToolCall(Map<String, Object?> event) async {
-    String toolName = event["name"]?.toString() ?? "";
-    String callId = event["call_id"]?.toString() ?? "";
-    String rawArguments = event["arguments"]?.toString() ?? "{}";
-    if (toolName.isEmpty || callId.isEmpty) return;
-    info("[openai] executing tool $toolName");
-    ToolExecutionInvocation invocation = toolExecutionBridge.createInvocation(
-      callId: callId,
-      name: toolName,
-    );
-    ToolExecutionResult output = await invocation.executeJson(
-      rawArguments: rawArguments,
-    );
+    await toolExecutionBridge.executeJsonToolCall(
+      providerLabel: "openai",
+      callId: event["call_id"]?.toString(),
+      name: event["name"]?.toString(),
+      rawArguments: event["arguments"]?.toString() ?? "{}",
+      onResult: (ToolExecutionResult output) async {
+        await _sendProviderEvent(<String, Object?>{
+          "type": "conversation.item.create",
+          "item": <String, Object?>{
+            "type": "function_call_output",
+            "call_id": output.callId,
+            "output": output.outputJson,
+          },
+        });
 
-    await _sendProviderEvent(<String, Object?>{
-      "type": "conversation.item.create",
-      "item": <String, Object?>{
-        "type": "function_call_output",
-        "call_id": callId,
-        "output": output.outputJson,
+        await _sendProviderEvent(<String, Object?>{"type": "response.create"});
       },
-    });
-
-    await _sendProviderEvent(<String, Object?>{"type": "response.create"});
-
-    await invocation.emitCompleted(output);
+    );
   }
 
   Future<void> _handleProviderErrorMessage(Map<String, Object?> event) async {
-    warning("[openai] provider error event: ${jsonEncode(event)}");
-    Object? rawError = event["error"];
-    if (rawError is Map<String, dynamic>) {
-      await runtime.emitError(
-        message: rawError["message"]?.toString() ?? "OpenAI realtime error",
-        code: rawError["code"]?.toString(),
-      );
-      return;
-    }
-
-    await runtime.emitError(
-      message: event["message"]?.toString() ?? "OpenAI realtime error",
+    await emitProviderErrorFromEvent(
+      runtime: runtime,
+      providerLabel: "openai",
+      event: event,
+      defaultMessage: "OpenAI realtime error",
     );
   }
 
@@ -338,12 +319,30 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     sessionStarted = true;
     info("[openai] session updated and ready");
     await runtime.emitSessionStarted();
+    await _sendInitialGreetingIfNeeded();
+  }
+
+  Future<void> _sendInitialGreetingIfNeeded() async {
+    if (initialGreetingTriggered || !config.hasInitialGreeting) {
+      return;
+    }
+    initialGreetingTriggered = true;
+    info("[openai] sending initial greeting prompt");
+    await _sendProviderEvent(<String, Object?>{
+      "type": "response.create",
+      "response": <String, Object?>{
+        "modalities": <String>["audio", "text"],
+        "instructions": config.normalizedInitialGreeting,
+      },
+    });
   }
 
   Future<void> _handleProviderDone() async {
     responseActive = false;
     assistantOutput.logFinished(reason: "socket.done");
-    info("[openai] websocket done");
+    info(
+      "[openai] websocket done code=${connection.closeCode} reason=${connection.closeReason}",
+    );
     await close();
     await runtime.notifyClosed();
   }
@@ -358,8 +357,18 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   }
 
   Future<void> _sendProviderEvent(Map<String, Object?> payload) async {
-    if (isClosed) return;
-    socket?.add(jsonEncode(payload));
+    await connection.sendJson(payload);
+  }
+
+  Future<void> _emitUsageFromResponseDone(Map<String, Object?> event) async {
+    ArcaneVoiceProxyUsage? usage = _parseOpenAiUsage(
+      provider: RealtimeProviderCatalog.openAiId,
+      event: event,
+    );
+    if (usage == null) {
+      return;
+    }
+    await runtime.emitUsage(usage);
   }
 
   Map<String, Object?> _buildSessionUpdate() => <String, Object?>{
@@ -417,5 +426,71 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
       "type": "input_audio_buffer.append",
       "audio": base64Encode(audioBytes),
     });
+  }
+
+  ArcaneVoiceProxyUsage? _parseOpenAiUsage({
+    required String provider,
+    required Map<String, Object?> event,
+  }) {
+    Map<String, Object?>? response = _castObjectMap(event["response"]);
+    Map<String, Object?>? usage = _castObjectMap(
+      response?["usage"] ?? event["usage"],
+    );
+    if (usage == null) {
+      return null;
+    }
+
+    Map<String, Object?> inputDetails =
+        _castObjectMap(usage["input_token_details"]) ?? <String, Object?>{};
+    Map<String, Object?> outputDetails =
+        _castObjectMap(usage["output_token_details"]) ?? <String, Object?>{};
+    int? inputTokens = _readInt(usage["input_tokens"]);
+    int? outputTokens = _readInt(usage["output_tokens"]);
+    int? cachedTextTokens = _readInt(inputDetails["cached_tokens"]);
+    int? inputAudioTokens = _readInt(inputDetails["audio_tokens"]);
+    int? outputAudioTokens = _readInt(outputDetails["audio_tokens"]);
+    int? inputTextTokens =
+        _readInt(inputDetails["text_tokens"]) ??
+        _subtractNullable(inputTokens, inputAudioTokens);
+    int? outputTextTokens =
+        _readInt(outputDetails["text_tokens"]) ??
+        _subtractNullable(outputTokens, outputAudioTokens);
+    return ArcaneVoiceProxyUsage(
+      provider: provider,
+      inputTextTokens: inputTextTokens,
+      outputTextTokens: outputTextTokens,
+      cachedTextTokens: cachedTextTokens,
+      inputAudioTokens: inputAudioTokens,
+      outputAudioTokens: outputAudioTokens,
+      totalTokens: _readInt(usage["total_tokens"]),
+      raw: usage,
+    );
+  }
+
+  Map<String, Object?>? _castObjectMap(Object? value) {
+    if (value is Map<String, dynamic>) {
+      return value.cast<String, Object?>();
+    }
+    if (value is Map<String, Object?>) {
+      return value;
+    }
+    return null;
+  }
+
+  int? _readInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.round();
+    }
+    return int.tryParse(value?.toString() ?? "");
+  }
+
+  int? _subtractNullable(int? total, int? partial) {
+    if (total == null && partial == null) {
+      return null;
+    }
+    return (total ?? 0) - (partial ?? 0);
   }
 }

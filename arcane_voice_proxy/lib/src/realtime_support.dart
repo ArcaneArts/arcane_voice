@@ -1,6 +1,11 @@
+export 'package:arcane_voice_proxy/src/elevenlabs_agent_api_support.dart';
 export 'package:arcane_voice_proxy/src/provider_assistant_output_support.dart';
+export 'package:arcane_voice_proxy/src/provider_json_socket_support.dart';
+export 'package:arcane_voice_proxy/src/provider_realtime_error_support.dart';
 export 'package:arcane_voice_proxy/src/provider_proxy_turn_support.dart';
+export 'package:arcane_voice_proxy/src/proxy_session_support.dart';
 export 'package:arcane_voice_proxy/src/provider_runtime_support.dart';
+export 'package:arcane_voice_proxy/src/provider_speech_activity_support.dart';
 export 'package:arcane_voice_proxy/src/provider_tool_execution_support.dart';
 export 'package:arcane_voice_proxy/src/provider_transcript_support.dart';
 export 'package:arcane_voice_proxy/src/realtime_audio_support.dart';

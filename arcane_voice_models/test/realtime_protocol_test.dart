@@ -8,6 +8,8 @@ void main() {
       model: RealtimeProviderCatalog.gemini.defaultModel,
       voice: RealtimeProviderCatalog.gemini.defaultVoice,
       instructions: 'Say hello.',
+      initialGreeting: 'Greet the caller warmly to start the conversation.',
+      sessionContextJson: '{"auth":{"uid":"user-123"}}',
       providerOptionsJson: '{"agentId":"agent_test"}',
       turnDetection: const RealtimeTurnDetectionConfig(
         speechThresholdRms: 120,
@@ -25,10 +27,15 @@ void main() {
     );
 
     expect(decoded, isA<RealtimeSessionStartRequest>());
-    expect((decoded as RealtimeSessionStartRequest).provider, original.provider);
+    expect(
+      (decoded as RealtimeSessionStartRequest).provider,
+      original.provider,
+    );
     expect(decoded.model, original.model);
     expect(decoded.voice, original.voice);
     expect(decoded.instructions, original.instructions);
+    expect(decoded.initialGreeting, original.initialGreeting);
+    expect(decoded.sessionContextJson, original.sessionContextJson);
     expect(decoded.providerOptionsJson, original.providerOptionsJson);
     expect(
       decoded.turnDetection.speechEndSilenceMs,
@@ -64,15 +71,12 @@ void main() {
   });
 
   test('provider catalog defaults stay stable', () {
-    expect(
-      RealtimeProviderCatalog.ids,
-      <String>[
-        RealtimeProviderCatalog.openAiId,
-        RealtimeProviderCatalog.geminiId,
-        RealtimeProviderCatalog.grokId,
-        RealtimeProviderCatalog.elevenLabsId,
-      ],
-    );
+    expect(RealtimeProviderCatalog.ids, <String>[
+      RealtimeProviderCatalog.openAiId,
+      RealtimeProviderCatalog.geminiId,
+      RealtimeProviderCatalog.grokId,
+      RealtimeProviderCatalog.elevenLabsId,
+    ]);
     expect(
       RealtimeProviderCatalog.defaultModelFor(RealtimeProviderCatalog.openAiId),
       'gpt-realtime-1.5',
@@ -81,9 +85,6 @@ void main() {
       RealtimeProviderCatalog.defaultVoiceFor(RealtimeProviderCatalog.geminiId),
       'Kore',
     );
-    expect(
-      const RealtimeTurnDetectionConfig().speechEndSilenceMs,
-      900,
-    );
+    expect(const RealtimeTurnDetectionConfig().speechEndSilenceMs, 900);
   });
 }

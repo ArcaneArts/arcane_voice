@@ -112,6 +112,8 @@ ProviderSessionRuntime _buildRuntime({
     model: 'test-model',
     voice: 'test-voice',
     instructions: 'test instructions',
+    initialGreeting: '',
+    sessionContextJson: '{}',
     providerOptionsJson: '{}',
     inputSampleRate: 24000,
     outputSampleRate: 24000,
@@ -123,7 +125,9 @@ ProviderSessionRuntime _buildRuntime({
       bargeInEnabled: true,
     ),
   ),
-  toolRegistry: ProxyToolRegistry(serverTools: ServerToolRegistry.empty()),
+  toolRegistry: ProxyToolRegistry(
+    proxyTools: ArcaneVoiceProxyToolRegistry.empty(),
+  ),
   onJsonEvent: (RealtimeServerMessage payload) async {
     events.add(payload);
   },

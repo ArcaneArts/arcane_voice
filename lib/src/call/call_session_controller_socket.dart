@@ -187,8 +187,11 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     }
 
     if (payload is RealtimeToolStartedEvent) {
+      String toolLabel = RealtimeToolExecutionTarget.displayLabel(
+        payload.executionTarget,
+      );
       _appendOrQueueSystemEntry(
-        "Running ${payload.executionTarget} tool ${payload.name}...",
+        "Running $toolLabel tool ${payload.name}...",
       );
       return;
     }
@@ -196,8 +199,11 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     if (payload is RealtimeToolCompletedEvent) {
       String status = payload.success ? "Finished" : "Failed";
       String suffix = payload.error == null ? "." : ": ${payload.error}";
+      String toolLabel = RealtimeToolExecutionTarget.displayLabel(
+        payload.executionTarget,
+      );
       _appendOrQueueSystemEntry(
-        "$status ${payload.executionTarget} tool ${payload.name}$suffix",
+        "$status $toolLabel tool ${payload.name}$suffix",
       );
       return;
     }

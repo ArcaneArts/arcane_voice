@@ -35,8 +35,15 @@ class RealtimeMessageType {
 }
 
 class RealtimeToolExecutionTarget {
-  static const String server = "server";
-  static const String client = "client";
+  static const String arcaneVoiceProxy = "server";
+  static const String arcaneVoiceClient = "client";
+
+  static String displayLabel(String executionTarget) =>
+      switch (executionTarget) {
+        arcaneVoiceProxy => "Arcane Voice proxy",
+        arcaneVoiceClient => "Arcane Voice client",
+        _ => executionTarget,
+      };
 
   const RealtimeToolExecutionTarget._();
 }
@@ -49,6 +56,8 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
   final String model;
   final String voice;
   final String instructions;
+  final String initialGreeting;
+  final String sessionContextJson;
   final String providerOptionsJson;
   final int inputSampleRate;
   final int outputSampleRate;
@@ -61,6 +70,8 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
     required this.model,
     required this.voice,
     required this.instructions,
+    this.initialGreeting = "",
+    this.sessionContextJson = "{}",
     this.providerOptionsJson = "{}",
     this.inputSampleRate = 24000,
     this.outputSampleRate = 24000,

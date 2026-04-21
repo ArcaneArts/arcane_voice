@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
+import 'package:arcane_voice_proxy/src/proxy_session_support.dart';
 import 'package:arcane_voice_proxy/src/realtime_provider_session_support.dart';
 import 'package:arcane_voice_proxy/src/server_log.dart';
 import 'package:arcane_voice_proxy/src/server_tool_support.dart';
@@ -13,6 +14,14 @@ class ProviderSessionRuntime {
   final Future<void> Function(RealtimeServerMessage payload) onJsonEvent;
   final Future<void> Function(Uint8List audioBytes) onAudioChunk;
   final Future<void> Function() onClosed;
+  final Future<void> Function(ArcaneVoiceProxyUsage usage)? onUsage;
+  final Future<void> Function(
+    ToolExecutionResult result,
+    String rawArguments,
+    DateTime startedAt,
+    DateTime completedAt,
+  )?
+  onToolExecuted;
   final Stopwatch debugClock = Stopwatch();
 
   ProviderSessionRuntime({
@@ -23,6 +32,8 @@ class ProviderSessionRuntime {
     required this.onJsonEvent,
     required this.onAudioChunk,
     required this.onClosed,
+    this.onUsage,
+    this.onToolExecuted,
   });
 
   int get nowMs => debugClock.elapsedMilliseconds;
@@ -80,6 +91,25 @@ class ProviderSessionRuntime {
       onJsonEvent(RealtimeErrorEvent(message: message, code: code));
 
   Future<void> emitAudio(Uint8List audioBytes) => onAudioChunk(audioBytes);
+
+  Future<void> emitUsage(ArcaneVoiceProxyUsage usage) async {
+    if (onUsage == null) {
+      return;
+    }
+    await onUsage!(usage);
+  }
+
+  Future<void> notifyToolExecuted({
+    required ToolExecutionResult result,
+    required String rawArguments,
+    required DateTime startedAt,
+    required DateTime completedAt,
+  }) async {
+    if (onToolExecuted == null) {
+      return;
+    }
+    await onToolExecuted!(result, rawArguments, startedAt, completedAt);
+  }
 
   Future<void> notifyClosed() => onClosed();
 }

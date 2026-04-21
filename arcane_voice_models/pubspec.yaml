@@ -1,6 +1,6 @@
 name: arcane_voice_models
 description: Shared protocol models and codecs for the Arcane Voice client and proxy packages.
-version: 1.0.0
+version: 1.1.0
 repository: https://github.com/ArcaneArts/arcane_voice
 environment:
   sdk: ^3.11.0

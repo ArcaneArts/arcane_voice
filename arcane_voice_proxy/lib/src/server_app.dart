@@ -7,24 +7,35 @@ import 'package:arcane_voice_proxy/src/realtime_gateway.dart';
 import 'package:arcane_voice_proxy/src/realtime_support.dart';
 
 class ArcaneVoiceProxyServer {
-  final ServerEnvironment environment;
-  final ServerToolRegistry serverTools;
+  final ArcaneVoiceProxyEnvironment environment;
+  final ArcaneVoiceProxyToolRegistry proxyTools;
+  final ArcaneVoiceProxySessionResolver? sessionResolver;
+  final ArcaneVoiceProxyLifecycleCallbacks lifecycleCallbacks;
   final RealtimeGateway gateway;
 
   ArcaneVoiceProxyServer({
     required this.environment,
-    ServerToolRegistry? serverTools,
-  }) : serverTools = serverTools ?? ServerToolRegistry.empty(),
+    ArcaneVoiceProxyToolRegistry? proxyTools,
+    this.sessionResolver,
+    this.lifecycleCallbacks = const ArcaneVoiceProxyLifecycleCallbacks(),
+  }) : proxyTools = proxyTools ?? ArcaneVoiceProxyToolRegistry.empty(),
        gateway = RealtimeGateway(
          environment: environment,
-         serverTools: serverTools ?? ServerToolRegistry.empty(),
+         proxyTools: proxyTools ?? ArcaneVoiceProxyToolRegistry.empty(),
+         sessionResolver: sessionResolver,
+         lifecycleCallbacks: lifecycleCallbacks,
        );
 
   factory ArcaneVoiceProxyServer.fromPlatform({
-    ServerToolRegistry? serverTools,
+    ArcaneVoiceProxyToolRegistry? proxyTools,
+    ArcaneVoiceProxySessionResolver? sessionResolver,
+    ArcaneVoiceProxyLifecycleCallbacks lifecycleCallbacks =
+        const ArcaneVoiceProxyLifecycleCallbacks(),
   }) => ArcaneVoiceProxyServer(
-    environment: ServerEnvironment.fromPlatform(),
-    serverTools: serverTools,
+    environment: ArcaneVoiceProxyEnvironment.fromPlatform(),
+    proxyTools: proxyTools,
+    sessionResolver: sessionResolver,
+    lifecycleCallbacks: lifecycleCallbacks,
   );
 
   Future<HttpServer> serve({
@@ -100,7 +111,16 @@ class ArcaneVoiceProxyServer {
     }
 
     WebSocket socket = await WebSocketTransformer.upgrade(request);
-    unawaited(gateway.handleSocket(socket));
+    unawaited(
+      gateway.handleSocket(
+        socket,
+        connectionInfo: ArcaneVoiceProxyConnectionInfo(
+          remoteAddress: request.connectionInfo?.remoteAddress.address,
+          requestPath: request.uri.path,
+          queryParameters: request.uri.queryParameters,
+        ),
+      ),
+    );
   }
 }
 

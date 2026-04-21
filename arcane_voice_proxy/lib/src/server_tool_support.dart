@@ -3,43 +3,43 @@ import 'dart:convert';
 import 'package:arcane_voice_models/arcane_voice_models.dart';
 import 'package:arcane_voice_proxy/src/realtime_json_support.dart';
 
-typedef ClientToolInvoker =
+typedef ArcaneVoiceClientToolInvoker =
     Future<String> Function({
       required String requestId,
       required String name,
       required String rawArguments,
     });
 
-typedef ServerToolHandler =
+typedef ArcaneVoiceProxyToolHandler =
     Future<Object?> Function(Map<String, Object?> arguments);
 
 class ProxyToolRegistry {
-  final ServerToolRegistry serverTools;
+  final ArcaneVoiceProxyToolRegistry proxyTools;
   final Map<String, RealtimeToolDefinition> clientTools;
-  final ClientToolInvoker? clientToolInvoker;
+  final ArcaneVoiceClientToolInvoker? clientToolInvoker;
 
   ProxyToolRegistry({
-    ServerToolRegistry? serverTools,
+    ArcaneVoiceProxyToolRegistry? proxyTools,
     List<RealtimeToolDefinition> clientTools = const <RealtimeToolDefinition>[],
     this.clientToolInvoker,
-  }) : serverTools = serverTools ?? ServerToolRegistry.empty(),
+  }) : proxyTools = proxyTools ?? ArcaneVoiceProxyToolRegistry.empty(),
        clientTools = <String, RealtimeToolDefinition>{
          for (RealtimeToolDefinition tool in clientTools) tool.name: tool,
        };
 
   ProxyToolRegistry bindClientTools({
     required List<RealtimeToolDefinition> clientTools,
-    required ClientToolInvoker clientToolInvoker,
+    required ArcaneVoiceClientToolInvoker clientToolInvoker,
   }) => ProxyToolRegistry(
-    serverTools: serverTools,
+    proxyTools: proxyTools,
     clientTools: clientTools,
     clientToolInvoker: clientToolInvoker,
   );
 
-  bool get hasTools => serverTools.hasTools || clientTools.isNotEmpty;
+  bool get hasTools => proxyTools.hasTools || clientTools.isNotEmpty;
 
   List<Map<String, Object?>> get openAiTools => <Map<String, Object?>>[
-    ...serverTools.openAiTools,
+    ...proxyTools.openAiTools,
     for (RealtimeToolDefinition tool in clientTools.values)
       <String, Object?>{
         "type": "function",
@@ -52,7 +52,7 @@ class ProxyToolRegistry {
   List<Map<String, Object?>> get geminiTools => <Map<String, Object?>>[
     <String, Object?>{
       "functionDeclarations": <Map<String, Object?>>[
-        ...serverTools.geminiFunctionDeclarations,
+        ...proxyTools.geminiFunctionDeclarations,
         for (RealtimeToolDefinition tool in clientTools.values)
           <String, Object?>{
             "name": tool.name,
@@ -66,7 +66,7 @@ class ProxyToolRegistry {
   ];
 
   List<RealtimeToolDefinition> get allDefinitions => <RealtimeToolDefinition>[
-    for (ServerTool tool in serverTools.tools.values) tool.definition,
+    for (ArcaneVoiceProxyTool tool in proxyTools.tools.values) tool.definition,
     ...clientTools.values,
   ];
 
@@ -83,9 +83,9 @@ class ProxyToolRegistry {
       ];
 
   String executionTarget(String name) => switch (_toolLocation(name)) {
-    _ToolLocation.server => RealtimeToolExecutionTarget.server,
-    _ToolLocation.client => RealtimeToolExecutionTarget.client,
-    _ => RealtimeToolExecutionTarget.server,
+    _ToolLocation.proxy => RealtimeToolExecutionTarget.arcaneVoiceProxy,
+    _ToolLocation.client => RealtimeToolExecutionTarget.arcaneVoiceClient,
+    _ => RealtimeToolExecutionTarget.arcaneVoiceProxy,
   };
 
   Future<ToolExecutionResult> executeJsonString({
@@ -95,7 +95,7 @@ class ProxyToolRegistry {
   }) async {
     _ToolLocation location = _toolLocation(name);
     return switch (location) {
-      _ToolLocation.server => _executeServerTool(
+      _ToolLocation.proxy => _executeProxyTool(
         callId: callId,
         name: name,
         rawArguments: rawArguments,
@@ -108,7 +108,7 @@ class ProxyToolRegistry {
       _ => ToolExecutionResult.error(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.server,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceProxy,
         error: "Unknown tool: $name",
       ),
     };
@@ -141,7 +141,7 @@ class ProxyToolRegistry {
     };
   }
 
-  Future<ToolExecutionResult> _executeServerTool({
+  Future<ToolExecutionResult> _executeProxyTool({
     required String callId,
     required String name,
     required String rawArguments,
@@ -155,21 +155,21 @@ class ProxyToolRegistry {
           : decodedArguments is Map<String, Object?>
           ? decodedArguments
           : <String, Object?>{};
-      Object? result = await serverTools.executeValue(
+      Object? result = await proxyTools.executeValue(
         name: name,
         arguments: arguments,
       );
       return ToolExecutionResult.fromValue(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.server,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceProxy,
         value: result,
       );
     } catch (error) {
       return ToolExecutionResult.error(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.server,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceProxy,
         error: error.toString(),
       );
     }
@@ -180,12 +180,12 @@ class ProxyToolRegistry {
     required String name,
     required String rawArguments,
   }) async {
-    ClientToolInvoker? invoker = clientToolInvoker;
+    ArcaneVoiceClientToolInvoker? invoker = clientToolInvoker;
     if (invoker == null) {
       return ToolExecutionResult.error(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.client,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceClient,
         error: "Client tool invoker is not available.",
       );
     }
@@ -199,35 +199,37 @@ class ProxyToolRegistry {
       return ToolExecutionResult.fromJsonString(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.client,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceClient,
         outputJson: outputJson,
       );
     } catch (error) {
       return ToolExecutionResult.error(
         callId: callId,
         name: name,
-        executionTarget: RealtimeToolExecutionTarget.client,
+        executionTarget: RealtimeToolExecutionTarget.arcaneVoiceClient,
         error: error.toString(),
       );
     }
   }
 
   _ToolLocation _toolLocation(String name) => switch (name) {
-    _ when serverTools.hasTool(name) => _ToolLocation.server,
+    _ when proxyTools.hasTool(name) => _ToolLocation.proxy,
     _ when clientTools.containsKey(name) => _ToolLocation.client,
     _ => _ToolLocation.unknown,
   };
 }
 
-class ServerToolRegistry {
-  final Map<String, ServerTool> tools;
+class ArcaneVoiceProxyToolRegistry {
+  final Map<String, ArcaneVoiceProxyTool> tools;
 
-  ServerToolRegistry({List<ServerTool> tools = const <ServerTool>[]})
-    : tools = <String, ServerTool>{
-        for (ServerTool tool in tools) tool.name: tool,
-      };
+  ArcaneVoiceProxyToolRegistry({
+    List<ArcaneVoiceProxyTool> tools = const <ArcaneVoiceProxyTool>[],
+  }) : tools = <String, ArcaneVoiceProxyTool>{
+         for (ArcaneVoiceProxyTool tool in tools) tool.name: tool,
+       };
 
-  factory ServerToolRegistry.empty() => ServerToolRegistry();
+  factory ArcaneVoiceProxyToolRegistry.empty() =>
+      ArcaneVoiceProxyToolRegistry();
 
   bool get hasTools => tools.isNotEmpty;
 
@@ -236,14 +238,15 @@ class ServerToolRegistry {
   List<Map<String, Object?>> get openAiTools =>
       tools.values.map((tool) => tool.openAiDefinition).toList();
 
-  List<Map<String, Object?>> get geminiFunctionDeclarations =>
-      tools.values.map((tool) => tool.geminiDefinition.geminiSchemaSubset).toList();
+  List<Map<String, Object?>> get geminiFunctionDeclarations => tools.values
+      .map((tool) => tool.geminiDefinition.geminiSchemaSubset)
+      .toList();
 
   Future<Object?> executeValue({
     required String name,
     required Map<String, Object?> arguments,
   }) async {
-    ServerTool? tool = tools[name];
+    ArcaneVoiceProxyTool? tool = tools[name];
     if (tool == null) {
       throw StateError("Unknown tool: $name");
     }
@@ -252,7 +255,7 @@ class ServerToolRegistry {
   }
 }
 
-abstract class ServerTool {
+abstract class ArcaneVoiceProxyTool {
   RealtimeToolDefinition get definition;
   Future<Object?> execute(Map<String, Object?> arguments);
 
@@ -295,22 +298,22 @@ abstract class ServerTool {
   }
 }
 
-class CallbackServerTool extends ServerTool {
+class ArcaneVoiceProxyCallbackTool extends ArcaneVoiceProxyTool {
   @override
   final RealtimeToolDefinition definition;
-  final ServerToolHandler onExecute;
+  final ArcaneVoiceProxyToolHandler onExecute;
 
-  CallbackServerTool({
+  ArcaneVoiceProxyCallbackTool({
     required this.definition,
     required this.onExecute,
   });
 
-  factory CallbackServerTool.jsonSchema({
+  factory ArcaneVoiceProxyCallbackTool.jsonSchema({
     required String name,
     required String description,
     required Map<String, Object?> parameters,
-    required ServerToolHandler onExecute,
-  }) => CallbackServerTool(
+    required ArcaneVoiceProxyToolHandler onExecute,
+  }) => ArcaneVoiceProxyCallbackTool(
     definition: RealtimeToolDefinition(
       name: name,
       description: description,
@@ -320,7 +323,8 @@ class CallbackServerTool extends ServerTool {
   );
 
   @override
-  Future<Object?> execute(Map<String, Object?> arguments) => onExecute(arguments);
+  Future<Object?> execute(Map<String, Object?> arguments) =>
+      onExecute(arguments);
 }
 
 class ToolExecutionResult {
@@ -404,4 +408,4 @@ class ToolExecutionResult {
   }
 }
 
-enum _ToolLocation { server, client, unknown }
+enum _ToolLocation { proxy, client, unknown }

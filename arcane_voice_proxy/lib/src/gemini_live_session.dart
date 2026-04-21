@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
@@ -15,33 +14,26 @@ class GeminiLiveSession implements RealtimeProviderSession {
   final ProxyToolRegistry toolRegistry;
   late final ProviderSessionRuntime runtime;
   late final ProviderToolExecutionBridge toolExecutionBridge;
+  late final ProviderJsonSocketConnection connection;
   final MonotonicTranscriptBuffer userTranscriptBuffer =
       MonotonicTranscriptBuffer();
   final MonotonicTranscriptBuffer assistantTranscriptBuffer =
       MonotonicTranscriptBuffer();
+  final SpeechActivityTracker speechActivityTracker = SpeechActivityTracker();
+  final SpeechLeadInBuffer leadInBuffer = SpeechLeadInBuffer();
 
-  WebSocket? socket;
-  StreamSubscription<dynamic>? subscription;
   Timer? setupFallbackTimer;
   bool sessionStarted = false;
-  bool isClosed = false;
-  bool speechActive = false;
   bool responseActive = false;
   bool assistantTurnInterrupted = false;
   int upstreamAudioChunkCount = 0;
   int downstreamAudioChunkCount = 0;
-  int silentDurationMs = 0;
-  int loudDurationMs = 0;
-  int bufferedSpeechLeadInDurationMs = 0;
-  int userTurnCount = 0;
   int assistantTurnCount = 0;
-  int currentSpeechDurationMs = 0;
-  int currentSpeechChunkCount = 0;
   int lastActivityEndAtMs = -1;
   int responseStartedAtMs = -1;
   int firstAudioAtMs = -1;
   int responseAudioChunkCount = 0;
-  List<BufferedAudioChunk> bufferedSpeechLeadIn = <BufferedAudioChunk>[];
+  bool initialGreetingTriggered = false;
 
   GeminiLiveSession({
     required this.apiKey,
@@ -50,6 +42,14 @@ class GeminiLiveSession implements RealtimeProviderSession {
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
     required Future<void> Function() onClosed,
+    Future<void> Function(ArcaneVoiceProxyUsage usage)? onUsage,
+    Future<void> Function(
+      ToolExecutionResult result,
+      String rawArguments,
+      DateTime startedAt,
+      DateTime completedAt,
+    )?
+    onToolExecuted,
   }) {
     runtime = ProviderSessionRuntime(
       providerId: RealtimeProviderCatalog.geminiId,
@@ -59,8 +59,11 @@ class GeminiLiveSession implements RealtimeProviderSession {
       onJsonEvent: onJsonEvent,
       onAudioChunk: onAudioChunk,
       onClosed: onClosed,
+      onUsage: onUsage,
+      onToolExecuted: onToolExecuted,
     );
     toolExecutionBridge = ProviderToolExecutionBridge(runtime: runtime);
+    connection = ProviderJsonSocketConnection(providerLabel: "gemini");
   }
 
   @override
@@ -73,14 +76,11 @@ class GeminiLiveSession implements RealtimeProviderSession {
     Uri uri = Uri.parse(
       "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${Uri.encodeQueryComponent(apiKey)}",
     );
-    WebSocket providerSocket = await WebSocket.connect(uri.toString());
-    providerSocket.pingInterval = const Duration(seconds: 20);
-    socket = providerSocket;
-    subscription = providerSocket.listen(
-      _handleProviderMessage,
+    await connection.connect(
+      url: uri.toString(),
+      onMessage: _handleProviderMessage,
       onDone: _handleProviderDone,
       onError: _handleProviderError,
-      cancelOnError: true,
     );
 
     info("[gemini] websocket connected");
@@ -94,7 +94,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendAudio(Uint8List audioBytes) async {
-    if (isClosed) return;
+    if (connection.isClosed) return;
     upstreamAudioChunkCount++;
     int rms = Pcm16LevelMeter.computeRms(audioBytes);
     int chunkDurationMs = Pcm16ChunkTiming.chunkDurationMs(
@@ -113,7 +113,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendText(String text) async {
-    if (isClosed || text.trim().isEmpty) return;
+    if (connection.isClosed || text.trim().isEmpty) return;
     info("[gemini] sending text input: $text");
     await _sendProviderEvent(<String, Object?>{
       "realtimeInput": <String, Object?>{"text": text},
@@ -127,34 +127,20 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   @override
   Future<void> close() async {
-    if (isClosed) return;
-    isClosed = true;
-    info("[gemini] closing live session");
-    StreamSubscription<dynamic>? currentSubscription = subscription;
-    WebSocket? currentSocket = socket;
     Timer? currentSetupFallbackTimer = setupFallbackTimer;
-    subscription = null;
-    socket = null;
     setupFallbackTimer = null;
     currentSetupFallbackTimer?.cancel();
-    await currentSubscription?.cancel();
-    await currentSocket?.close();
+    await connection.close(closeMessage: "closing live session");
   }
 
   Future<void> _handleProviderMessage(dynamic message) async {
-    String rawMessage;
-    if (message is String) {
-      rawMessage = message;
-    } else if (message is List<int>) {
-      rawMessage = utf8.decode(message);
-    } else {
+    Map<String, Object?>? event = decodeProviderJsonMessage(message);
+    if (event == null) {
       warning(
         "[gemini] unsupported provider message type: ${message.runtimeType}",
       );
       return;
     }
-
-    Map<String, Object?> event = JsonCodecHelper.decodeObject(rawMessage);
     _logProviderEvent(event);
 
     if (event.containsKey("setupComplete")) {
@@ -173,6 +159,14 @@ class GeminiLiveSession implements RealtimeProviderSession {
     Map<String, Object?>? toolCall = _castObjectMap(event["toolCall"]);
     if (toolCall != null) {
       await _handleToolCall(toolCall);
+      return;
+    }
+
+    Map<String, Object?>? usageMetadata = _castObjectMap(
+      event["usageMetadata"],
+    );
+    if (usageMetadata != null) {
+      await _emitUsageMetadata(usageMetadata);
       return;
     }
 
@@ -329,7 +323,10 @@ class GeminiLiveSession implements RealtimeProviderSession {
         "response": output.outputObject,
       });
 
-      await invocation.emitCompleted(output);
+      await invocation.emitCompleted(
+        output,
+        rawArguments: jsonEncode(arguments),
+      );
     }
 
     if (functionResponses.isEmpty) return;
@@ -353,23 +350,44 @@ class GeminiLiveSession implements RealtimeProviderSession {
     currentSetupFallbackTimer?.cancel();
     info("[gemini] setup complete");
     await runtime.emitSessionStarted(outputSampleRate: 24000);
+    await _sendInitialGreetingIfNeeded();
+  }
+
+  Future<void> _sendInitialGreetingIfNeeded() async {
+    if (initialGreetingTriggered || !config.hasInitialGreeting) {
+      return;
+    }
+    initialGreetingTriggered = true;
+    info("[gemini] sending initial greeting prompt");
+    await _sendProviderEvent(<String, Object?>{
+      "clientContent": <String, Object?>{
+        "turns": <Map<String, Object?>>[
+          <String, Object?>{
+            "role": "user",
+            "parts": <Map<String, Object?>>[
+              <String, Object?>{"text": config.normalizedInitialGreeting},
+            ],
+          },
+        ],
+        "turnComplete": true,
+      },
+    });
   }
 
   Future<void> _handleProviderDone() async {
-    WebSocket? currentSocket = socket;
-    int? closeCode = currentSocket?.closeCode;
-    String? closeReason = currentSocket?.closeReason;
-    info("[gemini] websocket done code=$closeCode reason=$closeReason");
+    info(
+      "[gemini] websocket done code=${connection.closeCode} reason=${connection.closeReason}",
+    );
     _logResponseFinished(reason: "socket.done");
-    if (!sessionStarted && (closeReason?.isNotEmpty ?? false)) {
-      await runtime.emitError(message: closeReason!);
+    if (!sessionStarted && (connection.closeReason?.isNotEmpty ?? false)) {
+      await runtime.emitError(message: connection.closeReason!);
     }
     await close();
     await runtime.notifyClosed();
   }
 
   void _handleSetupFallbackTimeout() {
-    if (sessionStarted || isClosed) return;
+    if (sessionStarted || connection.isClosed) return;
     warning("[gemini] setupComplete not received, assuming ready");
     unawaited(_announceSessionStarted());
   }
@@ -383,8 +401,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
   }
 
   Future<void> _sendProviderEvent(Map<String, Object?> payload) async {
-    if (isClosed) return;
-    socket?.add(jsonEncode(payload));
+    await connection.sendJson(payload);
   }
 
   Future<void> _handleTurnDetection(
@@ -392,84 +409,63 @@ class GeminiLiveSession implements RealtimeProviderSession {
     int rms,
     int chunkDurationMs,
   ) async {
-    if (speechActive) {
+    if (speechActivityTracker.speechActive) {
       await _sendAudioChunk(audioBytes);
-      currentSpeechDurationMs += chunkDurationMs;
-      currentSpeechChunkCount++;
-      if (rms >= config.turnDetection.speechThresholdRms) {
-        silentDurationMs = 0;
-        return;
-      }
-
-      silentDurationMs += chunkDurationMs;
-      if (silentDurationMs < config.turnDetection.speechEndSilenceMs) return;
-
-      speechActive = false;
-      silentDurationMs = 0;
-      loudDurationMs = 0;
-      lastActivityEndAtMs = runtime.nowMs;
+      SpeechActivityUpdate activeUpdate = speechActivityTracker.observe(
+        rms: rms,
+        chunkDurationMs: chunkDurationMs,
+        speechThresholdRms: config.turnDetection.speechThresholdRms,
+        speechStartMs: config.turnDetection.speechStartMs,
+        speechEndSilenceMs: config.turnDetection.speechEndSilenceMs,
+        nowMs: runtime.nowMs,
+      );
+      ProxySpeechStopEvent? stopEvent = activeUpdate.stopEvent;
+      if (stopEvent == null) return;
+      lastActivityEndAtMs = stopEvent.stoppedAtMs;
       info(
-        "[gemini] user turn #$userTurnCount speech stopped at ${lastActivityEndAtMs}ms "
-        "speechDuration=${currentSpeechDurationMs}ms chunks=$currentSpeechChunkCount "
-        "silenceWindow=${config.turnDetection.speechEndSilenceMs}ms",
+        "[gemini] user turn #${stopEvent.turnNumber} speech stopped at ${stopEvent.stoppedAtMs}ms "
+        "speechDuration=${stopEvent.speechDurationMs}ms chunks=${stopEvent.speechChunkCount} "
+        "silenceWindow=${stopEvent.silenceWindowMs}ms",
       );
       await runtime.emitSpeechStopped();
       await _sendProviderEvent(<String, Object?>{
         "realtimeInput": <String, Object?>{"activityEnd": <String, Object?>{}},
       });
-      currentSpeechDurationMs = 0;
-      currentSpeechChunkCount = 0;
       return;
     }
 
-    _bufferLeadIn(audioBytes, chunkDurationMs);
-
-    if (rms < config.turnDetection.speechThresholdRms) {
-      loudDurationMs = 0;
+    leadInBuffer.bufferAudio(
+      audioBytes: audioBytes,
+      chunkDurationMs: chunkDurationMs,
+      maxDurationMs: config.turnDetection.preSpeechMs,
+    );
+    SpeechActivityUpdate idleUpdate = speechActivityTracker.observe(
+      rms: rms,
+      chunkDurationMs: chunkDurationMs,
+      speechThresholdRms: config.turnDetection.speechThresholdRms,
+      speechStartMs: config.turnDetection.speechStartMs,
+      speechEndSilenceMs: config.turnDetection.speechEndSilenceMs,
+      nowMs: runtime.nowMs,
+      leadInDurationMs: leadInBuffer.bufferedDurationMs,
+      bufferedChunkCount: leadInBuffer.bufferedChunkCount,
+    );
+    ProxySpeechStartEvent? startEvent = idleUpdate.startEvent;
+    if (startEvent == null) {
       return;
     }
-
-    loudDurationMs += chunkDurationMs;
-    if (loudDurationMs < config.turnDetection.speechStartMs) return;
-
-    speechActive = true;
-    userTurnCount++;
-    silentDurationMs = 0;
-    loudDurationMs = 0;
-    currentSpeechDurationMs = bufferedSpeechLeadInDurationMs;
-    currentSpeechChunkCount = bufferedSpeechLeadIn.length;
     userTranscriptBuffer.startTurn();
     info(
-      "[gemini] user turn #$userTurnCount speech started at ${runtime.nowMs}ms "
-      "leadIn=${bufferedSpeechLeadInDurationMs}ms bufferedChunks=${bufferedSpeechLeadIn.length}",
+      "[gemini] user turn #${startEvent.turnNumber} speech started at ${startEvent.startedAtMs}ms "
+      "leadIn=${startEvent.leadInDurationMs}ms bufferedChunks=${startEvent.bufferedChunkCount}",
     );
     await runtime.emitSpeechStarted();
     await _sendProviderEvent(<String, Object?>{
       "realtimeInput": <String, Object?>{"activityStart": <String, Object?>{}},
     });
 
-    List<BufferedAudioChunk> speechLeadIn = bufferedSpeechLeadIn;
-    bufferedSpeechLeadIn = <BufferedAudioChunk>[];
-    bufferedSpeechLeadInDurationMs = 0;
+    List<BufferedAudioChunk> speechLeadIn = leadInBuffer.takeChunks();
     for (BufferedAudioChunk chunk in speechLeadIn) {
       await _sendAudioChunk(chunk.audioBytes);
-    }
-  }
-
-  void _bufferLeadIn(Uint8List audioBytes, int chunkDurationMs) {
-    bufferedSpeechLeadIn = <BufferedAudioChunk>[
-      ...bufferedSpeechLeadIn,
-      BufferedAudioChunk(
-        audioBytes: Uint8List.fromList(audioBytes),
-        durationMs: chunkDurationMs,
-      ),
-    ];
-    bufferedSpeechLeadInDurationMs += chunkDurationMs;
-    while (bufferedSpeechLeadInDurationMs > config.turnDetection.preSpeechMs &&
-        bufferedSpeechLeadIn.isNotEmpty) {
-      BufferedAudioChunk removedChunk = bufferedSpeechLeadIn.first;
-      bufferedSpeechLeadIn = bufferedSpeechLeadIn.sublist(1);
-      bufferedSpeechLeadInDurationMs -= removedChunk.durationMs;
     }
   }
 
@@ -569,6 +565,29 @@ class GeminiLiveSession implements RealtimeProviderSession {
       return value;
     }
     return null;
+  }
+
+  Future<void> _emitUsageMetadata(Map<String, Object?> usageMetadata) async {
+    await runtime.emitUsage(
+      ArcaneVoiceProxyUsage(
+        provider: RealtimeProviderCatalog.geminiId,
+        inputTextTokens: _readInt(usageMetadata["promptTokenCount"]),
+        outputTextTokens: _readInt(usageMetadata["candidatesTokenCount"]),
+        cachedTextTokens: _readInt(usageMetadata["cachedContentTokenCount"]),
+        totalTokens: _readInt(usageMetadata["totalTokenCount"]),
+        raw: usageMetadata,
+      ),
+    );
+  }
+
+  int? _readInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.round();
+    }
+    return int.tryParse(value?.toString() ?? "");
   }
 
   String _resolveVoiceName(String requestedVoice) {

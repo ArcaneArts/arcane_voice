@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
@@ -17,17 +16,16 @@ class GrokVoiceSession implements RealtimeProviderSession {
   late final ProviderToolExecutionBridge toolExecutionBridge;
   late final AssistantOutputLifecycle assistantOutput;
   late final ProxyTurnDetector turnDetector;
+  late final ProviderJsonSocketConnection connection;
   final MonotonicTranscriptBuffer userTranscriptBuffer =
       MonotonicTranscriptBuffer();
 
-  WebSocket? socket;
-  StreamSubscription<dynamic>? subscription;
   bool sessionStarted = false;
-  bool isClosed = false;
   int upstreamAudioChunkCount = 0;
   int downstreamAudioChunkCount = 0;
   bool responseActive = false;
   bool audioBufferedForCurrentTurn = false;
+  bool initialGreetingTriggered = false;
 
   GrokVoiceSession({
     required this.apiKey,
@@ -36,6 +34,14 @@ class GrokVoiceSession implements RealtimeProviderSession {
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
     required Future<void> Function() onClosed,
+    Future<void> Function(ArcaneVoiceProxyUsage usage)? onUsage,
+    Future<void> Function(
+      ToolExecutionResult result,
+      String rawArguments,
+      DateTime startedAt,
+      DateTime completedAt,
+    )?
+    onToolExecuted,
   }) {
     runtime = ProviderSessionRuntime(
       providerId: RealtimeProviderCatalog.grokId,
@@ -45,10 +51,13 @@ class GrokVoiceSession implements RealtimeProviderSession {
       onJsonEvent: onJsonEvent,
       onAudioChunk: onAudioChunk,
       onClosed: onClosed,
+      onUsage: onUsage,
+      onToolExecuted: onToolExecuted,
     );
     toolExecutionBridge = ProviderToolExecutionBridge(runtime: runtime);
     assistantOutput = AssistantOutputLifecycle(runtime: runtime);
     turnDetector = ProxyTurnDetector(runtime: runtime);
+    connection = ProviderJsonSocketConnection(providerLabel: "grok");
   }
 
   @override
@@ -59,21 +68,15 @@ class GrokVoiceSession implements RealtimeProviderSession {
     await runtime.emitConnecting();
 
     Uri uri = Uri.parse("wss://api.x.ai/v1/realtime");
-    WebSocket providerSocket = await WebSocket.connect(
-      uri.toString(),
+    await connection.connect(
+      url: uri.toString(),
       headers: <String, Object>{"Authorization": "Bearer $apiKey"},
+      onMessage: _handleProviderMessage,
+      onDone: _handleProviderDone,
+      onError: _handleProviderError,
     );
 
     info("[grok] websocket connected");
-    providerSocket.pingInterval = const Duration(seconds: 20);
-    socket = providerSocket;
-    subscription = providerSocket.listen(
-      _handleProviderMessage,
-      onDone: _handleProviderDone,
-      onError: _handleProviderError,
-      cancelOnError: true,
-    );
-
     await _sendProviderEvent(<String, Object?>{
       "type": "session.update",
       "session": _buildSessionUpdate(),
@@ -83,7 +86,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendAudio(Uint8List audioBytes) async {
-    if (isClosed) return;
+    if (connection.isClosed) return;
 
     upstreamAudioChunkCount++;
     if (upstreamAudioChunkCount <= 5 ||
@@ -102,7 +105,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   @override
   Future<void> sendText(String text) async {
-    if (isClosed) return;
+    if (connection.isClosed) return;
     info("[grok] sending text input: $text");
 
     await _sendProviderEvent(<String, Object?>{
@@ -125,26 +128,12 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   @override
   Future<void> close() async {
-    if (isClosed) return;
-    isClosed = true;
-    info("[grok] closing realtime session");
-    StreamSubscription<dynamic>? currentSubscription = subscription;
-    WebSocket? currentSocket = socket;
-    subscription = null;
-    socket = null;
-    await currentSubscription?.cancel();
-    await currentSocket?.close();
+    await connection.close(closeMessage: "closing realtime session");
   }
 
   Future<void> _handleProviderMessage(dynamic message) async {
-    String source = switch (message) {
-      String text => text,
-      List<int> bytes => utf8.decode(bytes),
-      _ => "",
-    };
-    if (source.isEmpty) return;
-
-    Map<String, Object?> event = JsonCodecHelper.decodeObject(source);
+    Map<String, Object?>? event = decodeProviderJsonMessage(message);
+    if (event == null) return;
     String type = event["type"]?.toString() ?? "";
     _logProviderEvent(type, event);
 
@@ -166,6 +155,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
     }
 
     if (type == "response.done") {
+      await _emitUsageFromResponseDone(event);
       responseActive = false;
       await _flushPendingUserTranscript();
       info("[grok] response done");
@@ -245,31 +235,24 @@ class GrokVoiceSession implements RealtimeProviderSession {
   }
 
   Future<void> _handleToolCall(Map<String, Object?> event) async {
-    String toolName = event["name"]?.toString() ?? "";
-    String callId = event["call_id"]?.toString() ?? "";
-    String rawArguments = event["arguments"]?.toString() ?? "{}";
-    if (toolName.isEmpty || callId.isEmpty) return;
-    info("[grok] executing tool $toolName");
-    ToolExecutionInvocation invocation = toolExecutionBridge.createInvocation(
-      callId: callId,
-      name: toolName,
-    );
-    ToolExecutionResult output = await invocation.executeJson(
-      rawArguments: rawArguments,
-    );
+    await toolExecutionBridge.executeJsonToolCall(
+      providerLabel: "grok",
+      callId: event["call_id"]?.toString(),
+      name: event["name"]?.toString(),
+      rawArguments: event["arguments"]?.toString() ?? "{}",
+      onResult: (ToolExecutionResult output) async {
+        await _sendProviderEvent(<String, Object?>{
+          "type": "conversation.item.create",
+          "item": <String, Object?>{
+            "type": "function_call_output",
+            "call_id": output.callId,
+            "output": output.outputJson,
+          },
+        });
 
-    await _sendProviderEvent(<String, Object?>{
-      "type": "conversation.item.create",
-      "item": <String, Object?>{
-        "type": "function_call_output",
-        "call_id": callId,
-        "output": output.outputJson,
+        await _sendProviderEvent(<String, Object?>{"type": "response.create"});
       },
-    });
-
-    await _sendProviderEvent(<String, Object?>{"type": "response.create"});
-
-    await invocation.emitCompleted(output);
+    );
   }
 
   Future<void> _handleUserTranscript(Map<String, Object?> event) async {
@@ -280,18 +263,11 @@ class GrokVoiceSession implements RealtimeProviderSession {
   }
 
   Future<void> _handleProviderErrorMessage(Map<String, Object?> event) async {
-    warning("[grok] provider error event: ${jsonEncode(event)}");
-    Object? rawError = event["error"];
-    if (rawError is Map<String, dynamic>) {
-      await runtime.emitError(
-        message: rawError["message"]?.toString() ?? "Grok realtime error",
-        code: rawError["code"]?.toString(),
-      );
-      return;
-    }
-
-    await runtime.emitError(
-      message: event["message"]?.toString() ?? "Grok realtime error",
+    await emitProviderErrorFromEvent(
+      runtime: runtime,
+      providerLabel: "grok",
+      event: event,
+      defaultMessage: "Grok realtime error",
     );
   }
 
@@ -300,6 +276,21 @@ class GrokVoiceSession implements RealtimeProviderSession {
     sessionStarted = true;
     info("[grok] session updated and ready");
     await runtime.emitSessionStarted();
+    await _sendInitialGreetingIfNeeded();
+  }
+
+  Future<void> _sendInitialGreetingIfNeeded() async {
+    if (initialGreetingTriggered || !config.hasInitialGreeting) {
+      return;
+    }
+    initialGreetingTriggered = true;
+    info("[grok] sending initial greeting prompt");
+    await _sendProviderEvent(<String, Object?>{
+      "type": "response.create",
+      "response": <String, Object?>{
+        "instructions": config.normalizedInitialGreeting,
+      },
+    });
   }
 
   Future<void> _flushPendingUserTranscript() async {
@@ -315,7 +306,9 @@ class GrokVoiceSession implements RealtimeProviderSession {
   Future<void> _handleProviderDone() async {
     responseActive = false;
     assistantOutput.logFinished(reason: "socket.done");
-    info("[grok] websocket done");
+    info(
+      "[grok] websocket done code=${connection.closeCode} reason=${connection.closeReason}",
+    );
     await close();
     await runtime.notifyClosed();
   }
@@ -330,8 +323,18 @@ class GrokVoiceSession implements RealtimeProviderSession {
   }
 
   Future<void> _sendProviderEvent(Map<String, Object?> payload) async {
-    if (isClosed) return;
-    socket?.add(jsonEncode(payload));
+    await connection.sendJson(payload);
+  }
+
+  Future<void> _emitUsageFromResponseDone(Map<String, Object?> event) async {
+    ArcaneVoiceProxyUsage? usage = _parseOpenAiLikeUsage(
+      provider: RealtimeProviderCatalog.grokId,
+      event: event,
+    );
+    if (usage == null) {
+      return;
+    }
+    await runtime.emitUsage(usage);
   }
 
   Map<String, Object?> _buildSessionUpdate() => <String, Object?>{
@@ -401,5 +404,71 @@ class GrokVoiceSession implements RealtimeProviderSession {
       "type": "input_audio_buffer.append",
       "audio": base64Encode(audioBytes),
     });
+  }
+
+  ArcaneVoiceProxyUsage? _parseOpenAiLikeUsage({
+    required String provider,
+    required Map<String, Object?> event,
+  }) {
+    Map<String, Object?>? response = _castObjectMap(event["response"]);
+    Map<String, Object?>? usage = _castObjectMap(
+      response?["usage"] ?? event["usage"],
+    );
+    if (usage == null) {
+      return null;
+    }
+
+    Map<String, Object?> inputDetails =
+        _castObjectMap(usage["input_token_details"]) ?? <String, Object?>{};
+    Map<String, Object?> outputDetails =
+        _castObjectMap(usage["output_token_details"]) ?? <String, Object?>{};
+    int? inputTokens = _readInt(usage["input_tokens"]);
+    int? outputTokens = _readInt(usage["output_tokens"]);
+    int? cachedTextTokens = _readInt(inputDetails["cached_tokens"]);
+    int? inputAudioTokens = _readInt(inputDetails["audio_tokens"]);
+    int? outputAudioTokens = _readInt(outputDetails["audio_tokens"]);
+    int? inputTextTokens =
+        _readInt(inputDetails["text_tokens"]) ??
+        _subtractNullable(inputTokens, inputAudioTokens);
+    int? outputTextTokens =
+        _readInt(outputDetails["text_tokens"]) ??
+        _subtractNullable(outputTokens, outputAudioTokens);
+    return ArcaneVoiceProxyUsage(
+      provider: provider,
+      inputTextTokens: inputTextTokens,
+      outputTextTokens: outputTextTokens,
+      cachedTextTokens: cachedTextTokens,
+      inputAudioTokens: inputAudioTokens,
+      outputAudioTokens: outputAudioTokens,
+      totalTokens: _readInt(usage["total_tokens"]),
+      raw: usage,
+    );
+  }
+
+  Map<String, Object?>? _castObjectMap(Object? value) {
+    if (value is Map<String, dynamic>) {
+      return value.cast<String, Object?>();
+    }
+    if (value is Map<String, Object?>) {
+      return value;
+    }
+    return null;
+  }
+
+  int? _readInt(Object? value) {
+    if (value is int) {
+      return value;
+    }
+    if (value is num) {
+      return value.round();
+    }
+    return int.tryParse(value?.toString() ?? "");
+  }
+
+  int? _subtractNullable(int? total, int? partial) {
+    if (total == null && partial == null) {
+      return null;
+    }
+    return (total ?? 0) - (partial ?? 0);
   }
 }

@@ -3,10 +3,11 @@ import 'dart:io';
 import 'package:arcane_voice_proxy/arcane_voice_proxy.dart';
 
 void main(List<String> args) async {
-  ServerEnvironment environment = ServerEnvironment.fromPlatform();
+  ArcaneVoiceProxyEnvironment environment =
+      ArcaneVoiceProxyEnvironment.fromPlatform();
   ArcaneVoiceProxyServer proxyServer = ArcaneVoiceProxyServer(
     environment: environment,
-    serverTools: ServerToolRegistry.empty(),
+    proxyTools: ArcaneVoiceProxyToolRegistry.empty(),
   );
   int port = int.parse(Platform.environment["PORT"] ?? "8080");
   HttpServer server = await proxyServer.serve(
