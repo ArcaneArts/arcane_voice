@@ -1,0 +1,16 @@
+name: arcane_voice_proxy
+description: Server-side realtime voice proxy for OpenAI, Gemini, and Grok with a unified client protocol.
+version: 1.0.0
+repository: https://github.com/ArcaneArts/arcane_voice
+
+environment:
+  sdk: ^3.11.0
+
+dependencies:
+  arcane_voice_models: # todo: version: ^1.0.0
+    path: ../arcane_voice_models
+  fast_log: ^1.0.7
+dev_dependencies:
+  http: ^1.2.2
+  lints: ^6.0.0
+  test: ^1.25.6

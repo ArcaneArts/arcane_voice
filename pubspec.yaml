@@ -1,0 +1,19 @@
+name: arcane_voice
+description: Flutter client runtime for provider-agnostic realtime voice calls through an Arcane Voice proxy.
+version: 1.0.0
+repository: https://github.com/ArcaneArts/arcane_voice
+environment:
+  sdk: ^3.11.0
+dependencies:
+  flutter:
+    sdk: flutter
+  arcane_voice_models: # todo: version: ^1.0.0
+    path: arcane_voice_models
+  fast_log: ^1.0.7
+  flutter_soloud: ^3.3.7
+  record: ^6.1.2
+  web_socket_channel: ^3.0.3
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0

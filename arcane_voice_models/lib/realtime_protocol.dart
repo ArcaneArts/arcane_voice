@@ -1,7 +1,7 @@
 import 'dart:convert';
 
-import 'package:models/gen/artifacts.gen.dart';
-import 'package:models/models.dart';
+import 'package:arcane_voice_models/gen/artifacts.gen.dart';
+import 'package:arcane_voice_models/src/realtime/realtime_protocol_messages.dart';
 
 class RealtimeProtocolCodec {
   const RealtimeProtocolCodec._();
@@ -13,6 +13,7 @@ class RealtimeProtocolCodec {
         RealtimeSessionInterruptRequest value => value.to.json,
         RealtimeTextInputRequest value => value.to.json,
         RealtimePingRequest value => value.to.json,
+        RealtimeToolResultRequest value => value.to.json,
         _ => throw const FormatException(
           "Unsupported realtime client message.",
         ),
@@ -35,6 +36,7 @@ class RealtimeProtocolCodec {
         RealtimeTranscriptAssistantDiscardEvent value => value.to.json,
         RealtimeToolStartedEvent value => value.to.json,
         RealtimeToolCompletedEvent value => value.to.json,
+        RealtimeToolCallEvent value => value.to.json,
         _ => throw const FormatException(
           "Unsupported realtime server message.",
         ),
@@ -56,6 +58,7 @@ class RealtimeProtocolCodec {
         $RealtimeSessionInterruptRequest.fromMap(map),
       RealtimeMessageType.textInput => $RealtimeTextInputRequest.fromMap(map),
       RealtimeMessageType.ping => $RealtimePingRequest.fromMap(map),
+      RealtimeMessageType.toolResult => $RealtimeToolResultRequest.fromMap(map),
       _ => throw FormatException("Unsupported realtime client message: $type"),
     };
   }
@@ -95,6 +98,7 @@ class RealtimeProtocolCodec {
       RealtimeMessageType.toolCompleted => $RealtimeToolCompletedEvent.fromMap(
         map,
       ),
+      RealtimeMessageType.toolCall => $RealtimeToolCallEvent.fromMap(map),
       _ => throw FormatException("Unsupported realtime server message: $type"),
     };
   }

@@ -1,8 +1,9 @@
+import 'package:arcane_voice_models/src/realtime/realtime_message_types.dart';
+import 'package:arcane_voice_models/src/realtime/realtime_tool_definition.dart';
+import 'package:arcane_voice_models/src/realtime/realtime_turn_detection_config.dart';
 import 'package:artifact/artifact.dart';
-import 'package:models/src/realtime/realtime_message_types.dart';
-import 'package:models/src/realtime/realtime_turn_detection_config.dart';
 
-export 'package:models/src/realtime/realtime_message_types.dart';
+export 'package:arcane_voice_models/src/realtime/realtime_message_types.dart';
 
 class RealtimeMessageType {
   static const String connectionReady = "connection.ready";
@@ -26,8 +27,17 @@ class RealtimeMessageType {
       "transcript.assistant.discard";
   static const String toolStarted = "tool.started";
   static const String toolCompleted = "tool.completed";
+  static const String toolCall = "tool.call";
+  static const String toolResult = "tool.result";
 
   const RealtimeMessageType._();
+}
+
+class RealtimeToolExecutionTarget {
+  static const String server = "server";
+  static const String client = "client";
+
+  const RealtimeToolExecutionTarget._();
 }
 
 @artifact
@@ -41,6 +51,7 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
   final int inputSampleRate;
   final int outputSampleRate;
   final RealtimeTurnDetectionConfig turnDetection;
+  final List<RealtimeToolDefinition> clientTools;
 
   const RealtimeSessionStartRequest({
     this.type = RealtimeMessageType.sessionStart,
@@ -51,6 +62,7 @@ class RealtimeSessionStartRequest implements RealtimeClientMessage {
     this.inputSampleRate = 24000,
     this.outputSampleRate = 24000,
     this.turnDetection = const RealtimeTurnDetectionConfig(),
+    required this.clientTools,
   });
 }
 
@@ -95,6 +107,22 @@ class RealtimePingRequest implements RealtimeClientMessage {
 }
 
 @artifact
+class RealtimeToolResultRequest implements RealtimeClientMessage {
+  @override
+  final String type;
+  final String requestId;
+  final String outputJson;
+  final String? error;
+
+  const RealtimeToolResultRequest({
+    this.type = RealtimeMessageType.toolResult,
+    required this.requestId,
+    required this.outputJson,
+    this.error,
+  });
+}
+
+@artifact
 class RealtimeConnectionReadyEvent implements RealtimeServerMessage {
   @override
   final String type;
@@ -107,6 +135,22 @@ class RealtimeConnectionReadyEvent implements RealtimeServerMessage {
     required this.providers,
     required this.defaultModel,
     required this.defaultVoice,
+  });
+}
+
+@artifact
+class RealtimeToolCallEvent implements RealtimeServerMessage {
+  @override
+  final String type;
+  final String requestId;
+  final String name;
+  final String argumentsJson;
+
+  const RealtimeToolCallEvent({
+    this.type = RealtimeMessageType.toolCall,
+    required this.requestId,
+    required this.name,
+    required this.argumentsJson,
   });
 }
 
@@ -258,11 +302,15 @@ class RealtimeTranscriptAssistantDiscardEvent implements RealtimeServerMessage {
 class RealtimeToolStartedEvent implements RealtimeServerMessage {
   @override
   final String type;
+  final String callId;
   final String name;
+  final String executionTarget;
 
   const RealtimeToolStartedEvent({
     this.type = RealtimeMessageType.toolStarted,
+    required this.callId,
     required this.name,
+    required this.executionTarget,
   });
 }
 
@@ -270,10 +318,18 @@ class RealtimeToolStartedEvent implements RealtimeServerMessage {
 class RealtimeToolCompletedEvent implements RealtimeServerMessage {
   @override
   final String type;
+  final String callId;
   final String name;
+  final String executionTarget;
+  final bool success;
+  final String? error;
 
   const RealtimeToolCompletedEvent({
     this.type = RealtimeMessageType.toolCompleted,
+    required this.callId,
     required this.name,
+    required this.executionTarget,
+    this.success = true,
+    this.error,
   });
 }
