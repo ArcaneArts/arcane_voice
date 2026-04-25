@@ -19,6 +19,17 @@ PORT=8080
 - `GET /`
 - `GET /health`
 - `GET /ws/realtime`
+- `GET|POST /twilio/voice`
+- `GET /ws/twilio`
+
+For Twilio inbound calls, configure the phone number voice webhook to:
+
+```text
+https://your-public-host.example/twilio/voice
+```
+
+Set `TWILIO_STREAM_URL=wss://your-public-host.example/ws/twilio` if the server
+is behind a proxy that does not provide forwarded host/proto headers.
 
 This project stays intentionally small. The provider logic and websocket
 protocol handling live in `arcane_voice_proxy`.

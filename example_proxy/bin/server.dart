@@ -24,6 +24,7 @@ void main(List<String> args) async {
   ArcaneVoiceProxyServer proxyServer = ArcaneVoiceProxyServer(
     environment: environment,
     proxyTools: proxyTools,
+    vadMode: ArcaneVoiceProxyVadMode.auto,
     lifecycleCallbacks: ArcaneVoiceProxyLifecycleCallbacks(
       onSessionStarted: (event) async {
         stdout.writeln(

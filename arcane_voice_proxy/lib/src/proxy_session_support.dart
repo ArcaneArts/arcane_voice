@@ -4,6 +4,8 @@ import 'package:arcane_voice_models/arcane_voice_models.dart';
 import 'package:arcane_voice_proxy/src/realtime_provider_session_support.dart';
 import 'package:arcane_voice_proxy/src/server_tool_support.dart';
 
+enum ArcaneVoiceProxyVadMode { auto, local, provider }
+
 class ArcaneVoiceProxyConnectionInfo {
   final String? remoteAddress;
   final String? requestPath;
@@ -35,23 +37,27 @@ class ArcaneVoiceProxyResolvedSession {
   final RealtimeSessionConfig config;
   final ArcaneVoiceProxyToolRegistry proxyTools;
   final Object? context;
+  final ArcaneVoiceProxyVadMode? vadMode;
 
   const ArcaneVoiceProxyResolvedSession({
     required this.provider,
     required this.config,
     required this.proxyTools,
     this.context,
+    this.vadMode,
   });
 
   factory ArcaneVoiceProxyResolvedSession.passthrough({
     required RealtimeSessionStartRequest request,
     required ArcaneVoiceProxyToolRegistry proxyTools,
     Object? context,
+    ArcaneVoiceProxyVadMode? vadMode,
   }) => ArcaneVoiceProxyResolvedSession(
     provider: request.provider,
     config: RealtimeSessionConfig.fromRequest(request),
     proxyTools: proxyTools,
     context: context,
+    vadMode: vadMode,
   );
 }
 

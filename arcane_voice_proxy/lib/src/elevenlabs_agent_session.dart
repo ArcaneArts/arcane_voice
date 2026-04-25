@@ -15,6 +15,7 @@ class ElevenLabsAgentSession implements RealtimeProviderSession {
 
   final String apiKey;
   final RealtimeSessionConfig config;
+  final ArcaneVoiceProxyVadMode vadMode;
   final ProxyToolRegistry toolRegistry;
   late final ProviderSessionRuntime runtime;
   late final ProviderToolExecutionBridge toolExecutionBridge;
@@ -39,6 +40,7 @@ class ElevenLabsAgentSession implements RealtimeProviderSession {
   ElevenLabsAgentSession({
     required this.apiKey,
     required this.config,
+    required this.vadMode,
     required this.toolRegistry,
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,

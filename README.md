@@ -8,13 +8,14 @@ state management.
 This package is intentionally UI-light. It gives apps the call runtime and
 observable state; you bring the product UI.
 
-## What's New In 1.1.0
+## What's New In 1.3.0
 
-- `CallSessionController` now accepts `instructions` and `sessionContextJson`
-  directly.
-- Session bootstrap can carry opaque host context to a server-owned proxy.
-- The client tool surface is now clean and consistent around the
-  `ArcaneVoice...` names only.
+- Coordinated release with `arcane_voice_models` and `arcane_voice_proxy`
+  1.3.0.
+- Twilio inbound calls are handled server-side by `arcane_voice_proxy`; Flutter
+  clients keep using the same realtime websocket protocol.
+- `CallSessionController` still supports `instructions` and
+  `sessionContextJson` for app-originated sessions.
 
 ## Public Surface
 

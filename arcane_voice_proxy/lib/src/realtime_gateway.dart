@@ -116,12 +116,14 @@ class RealtimeGateway {
   final ArcaneVoiceProxyToolRegistry proxyTools;
   final ArcaneVoiceProxySessionResolver? sessionResolver;
   final ArcaneVoiceProxyLifecycleCallbacks lifecycleCallbacks;
+  final ArcaneVoiceProxyVadMode vadMode;
 
   RealtimeGateway({
     required this.environment,
     ArcaneVoiceProxyToolRegistry? proxyTools,
     this.sessionResolver,
     this.lifecycleCallbacks = const ArcaneVoiceProxyLifecycleCallbacks(),
+    this.vadMode = ArcaneVoiceProxyVadMode.auto,
   }) : proxyTools = proxyTools ?? ArcaneVoiceProxyToolRegistry.empty();
 
   Future<void> handleSocket(
@@ -146,6 +148,7 @@ class RealtimeGateway {
     proxyTools: proxyTools,
     sessionResolver: sessionResolver,
     lifecycleCallbacks: lifecycleCallbacks,
+    vadMode: vadMode,
     connectionInfo: connectionInfo,
   ).run();
 }
@@ -156,6 +159,7 @@ class RealtimeGatewaySession {
   final ArcaneVoiceProxyToolRegistry proxyTools;
   final ArcaneVoiceProxySessionResolver? sessionResolver;
   final ArcaneVoiceProxyLifecycleCallbacks lifecycleCallbacks;
+  final ArcaneVoiceProxyVadMode vadMode;
   final ArcaneVoiceProxyConnectionInfo connectionInfo;
 
   final String sessionId = _nextGatewaySessionId();
@@ -187,6 +191,7 @@ class RealtimeGatewaySession {
     required this.proxyTools,
     required this.sessionResolver,
     required this.lifecycleCallbacks,
+    required this.vadMode,
     required this.connectionInfo,
   });
 
@@ -302,6 +307,8 @@ class RealtimeGatewaySession {
     }
 
     RealtimeSessionConfig config = resolvedSession.config;
+    ArcaneVoiceProxyVadMode effectiveVadMode =
+        resolvedSession.vadMode ?? vadMode;
     ProxyToolRegistry toolRegistry =
         ProxyToolRegistry(
           proxyTools: resolvedSession.proxyTools,
@@ -314,13 +321,14 @@ class RealtimeGatewaySession {
     activeConfig = config;
     activeContext = resolvedSession.context;
     info(
-      "[gateway] starting session=$sessionId provider=$provider model=${config.model} voice=${config.voice}",
+      "[gateway] starting session=$sessionId provider=$provider model=${config.model} voice=${config.voice} vad=${effectiveVadMode.name}",
     );
 
     providerSession = _buildProviderSession(
       provider: provider,
       apiKey: apiKey,
       config: config,
+      vadMode: effectiveVadMode,
       toolRegistry: toolRegistry,
     );
 
@@ -344,6 +352,7 @@ class RealtimeGatewaySession {
       return ArcaneVoiceProxyResolvedSession.passthrough(
         request: payload,
         proxyTools: proxyTools,
+        vadMode: vadMode,
       );
     }
 
@@ -361,11 +370,13 @@ class RealtimeGatewaySession {
     required String provider,
     required String apiKey,
     required RealtimeSessionConfig config,
+    required ArcaneVoiceProxyVadMode vadMode,
     required ProxyToolRegistry toolRegistry,
   }) => switch (provider) {
     RealtimeProviderCatalog.geminiId => GeminiLiveSession(
       apiKey: apiKey,
       config: config,
+      vadMode: vadMode,
       toolRegistry: toolRegistry,
       onJsonEvent: sendMessage,
       onAudioChunk: sendAudio,
@@ -376,6 +387,7 @@ class RealtimeGatewaySession {
     RealtimeProviderCatalog.grokId => GrokVoiceSession(
       apiKey: apiKey,
       config: config,
+      vadMode: vadMode,
       toolRegistry: toolRegistry,
       onJsonEvent: sendMessage,
       onAudioChunk: sendAudio,
@@ -386,6 +398,7 @@ class RealtimeGatewaySession {
     RealtimeProviderCatalog.elevenLabsId => ElevenLabsAgentSession(
       apiKey: apiKey,
       config: config,
+      vadMode: vadMode,
       toolRegistry: toolRegistry,
       onJsonEvent: sendMessage,
       onAudioChunk: sendAudio,
@@ -396,6 +409,7 @@ class RealtimeGatewaySession {
     _ => OpenAiRealtimeSession(
       apiKey: apiKey,
       config: config,
+      vadMode: vadMode,
       toolRegistry: toolRegistry,
       onJsonEvent: sendMessage,
       onAudioChunk: sendAudio,

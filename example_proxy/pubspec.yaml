@@ -11,6 +11,9 @@ dependencies:
     path: ../arcane_voice_proxy
   arcane_voice_models:
     path: ../arcane_voice_models
+dependency_overrides:
+  arcane_voice_models:
+    path: ../arcane_voice_models
 
 dev_dependencies:
   http: ^1.2.2

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
+import 'package:arcane_voice_proxy/src/provider_vad_mode_support.dart';
 import 'package:arcane_voice_proxy/src/realtime_support.dart';
 import 'package:arcane_voice_proxy/src/server_log.dart';
 
@@ -11,6 +12,7 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   final String apiKey;
   final RealtimeSessionConfig config;
+  final ArcaneVoiceProxyVadMode vadMode;
   final ProxyToolRegistry toolRegistry;
   late final ProviderSessionRuntime runtime;
   late final ProviderToolExecutionBridge toolExecutionBridge;
@@ -26,10 +28,12 @@ class GrokVoiceSession implements RealtimeProviderSession {
   bool responseActive = false;
   bool audioBufferedForCurrentTurn = false;
   bool initialGreetingTriggered = false;
+  bool providerSpeechActive = false;
 
   GrokVoiceSession({
     required this.apiKey,
     required this.config,
+    required this.vadMode,
     required this.toolRegistry,
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
@@ -94,6 +98,10 @@ class GrokVoiceSession implements RealtimeProviderSession {
       info(
         "[grok] upstream audio chunk #$upstreamAudioChunkCount (${audioBytes.length} bytes)",
       );
+    }
+    if (_usesProviderVad) {
+      await _appendAudioChunk(audioBytes);
+      return;
     }
     await turnDetector.processAudio(
       audioBytes: audioBytes,
@@ -168,11 +176,18 @@ class GrokVoiceSession implements RealtimeProviderSession {
     }
 
     if (type == "input_audio_buffer.speech_started") {
+      if (_usesProviderVad) {
+        await _handleProviderSpeechStarted();
+        return;
+      }
       userTranscriptBuffer.startTurn();
       return;
     }
 
     if (type == "input_audio_buffer.speech_stopped") {
+      if (_usesProviderVad) {
+        await _handleProviderSpeechStopped();
+      }
       return;
     }
 
@@ -340,7 +355,11 @@ class GrokVoiceSession implements RealtimeProviderSession {
   Map<String, Object?> _buildSessionUpdate() => <String, Object?>{
     "instructions": config.instructions,
     "voice": config.voice,
-    "turn_detection": null,
+    "turn_detection": ProxyVadModeSupport.buildOpenAiCompatibleTurnDetection(
+      vadMode: vadMode,
+      config: config.turnDetection,
+      supportsResponseControls: false,
+    ),
     "audio": <String, Object?>{
       "input": <String, Object?>{
         "format": <String, Object?>{
@@ -378,6 +397,8 @@ class GrokVoiceSession implements RealtimeProviderSession {
 
   bool _isStreamingDeltaEvent(String type) => type.endsWith(".delta");
 
+  bool get _usesProviderVad => ProxyVadModeSupport.usesProviderVad(vadMode);
+
   Future<void> _handleSpeechStarted(ProxySpeechStartEvent event) async {
     userTranscriptBuffer.startTurn();
     if (responseActive && config.turnDetection.bargeInEnabled) {
@@ -396,6 +417,29 @@ class GrokVoiceSession implements RealtimeProviderSession {
       "type": "input_audio_buffer.commit",
     });
     await _sendProviderEvent(<String, Object?>{"type": "response.create"});
+  }
+
+  Future<void> _handleProviderSpeechStarted() async {
+    if (providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = true;
+    userTranscriptBuffer.startTurn();
+    if (responseActive && config.turnDetection.bargeInEnabled) {
+      info("[grok] cancelling active response for provider-detected speech");
+      responseActive = false;
+      assistantOutput.reset();
+      await interrupt();
+    }
+    await runtime.emitSpeechStarted();
+  }
+
+  Future<void> _handleProviderSpeechStopped() async {
+    if (!providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = false;
+    await runtime.emitSpeechStopped();
   }
 
   Future<void> _appendAudioChunk(Uint8List audioBytes) async {

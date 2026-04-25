@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
+import 'package:arcane_voice_proxy/src/provider_vad_mode_support.dart';
 import 'package:arcane_voice_proxy/src/server_log.dart';
 import 'package:arcane_voice_proxy/src/realtime_support.dart';
 
@@ -11,6 +12,7 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
 
   final String apiKey;
   final RealtimeSessionConfig config;
+  final ArcaneVoiceProxyVadMode vadMode;
   final ProxyToolRegistry toolRegistry;
   late final ProviderSessionRuntime runtime;
   late final ProviderToolExecutionBridge toolExecutionBridge;
@@ -24,10 +26,12 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   bool responseActive = false;
   int lastCommitAtMs = -1;
   bool initialGreetingTriggered = false;
+  bool providerSpeechActive = false;
 
   OpenAiRealtimeSession({
     required this.apiKey,
     required this.config,
+    required this.vadMode,
     required this.toolRegistry,
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
@@ -96,6 +100,10 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
       info(
         "[openai] upstream audio chunk #$upstreamAudioChunkCount (${audioBytes.length} bytes)",
       );
+    }
+    if (_usesProviderVad) {
+      await _appendAudioChunk(audioBytes);
+      return;
     }
     await turnDetector.processAudio(
       audioBytes: audioBytes,
@@ -172,11 +180,19 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     }
 
     if (type == "input_audio_buffer.speech_started") {
+      if (_usesProviderVad) {
+        await _handleProviderSpeechStarted();
+        return;
+      }
       info("[openai] speech started");
       return;
     }
 
     if (type == "input_audio_buffer.speech_stopped") {
+      if (_usesProviderVad) {
+        await _handleProviderSpeechStopped();
+        return;
+      }
       info("[openai] speech stopped");
       return;
     }
@@ -380,7 +396,11 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
     "input_audio_transcription": <String, Object?>{
       "model": "gpt-4o-mini-transcribe",
     },
-    "turn_detection": null,
+    "turn_detection": ProxyVadModeSupport.buildOpenAiCompatibleTurnDetection(
+      vadMode: vadMode,
+      config: config.turnDetection,
+      supportsResponseControls: true,
+    ),
     if (toolRegistry.hasTools) "tool_choice": "auto",
     if (toolRegistry.hasTools) "tools": toolRegistry.openAiTools,
   };
@@ -397,6 +417,8 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
   }
 
   bool _isStreamingDeltaEvent(String type) => type.endsWith(".delta");
+
+  bool get _usesProviderVad => ProxyVadModeSupport.usesProviderVad(vadMode);
 
   Future<void> _handleSpeechStarted(ProxySpeechStartEvent event) async {
     if (responseActive && config.turnDetection.bargeInEnabled) {
@@ -419,6 +441,25 @@ class OpenAiRealtimeSession implements RealtimeProviderSession {
         "modalities": <String>["audio", "text"],
       },
     });
+  }
+
+  Future<void> _handleProviderSpeechStarted() async {
+    if (providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = true;
+    info("[openai] speech started");
+    await runtime.emitSpeechStarted();
+  }
+
+  Future<void> _handleProviderSpeechStopped() async {
+    if (!providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = false;
+    lastCommitAtMs = runtime.nowMs;
+    info("[openai] speech stopped");
+    await runtime.emitSpeechStopped();
   }
 
   Future<void> _appendAudioChunk(Uint8List audioBytes) async {

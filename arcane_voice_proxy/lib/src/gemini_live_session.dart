@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:arcane_voice_models/arcane_voice_models.dart';
+import 'package:arcane_voice_proxy/src/provider_vad_mode_support.dart';
 import 'package:arcane_voice_proxy/src/realtime_support.dart';
 import 'package:arcane_voice_proxy/src/server_log.dart';
 
@@ -11,6 +12,7 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   final String apiKey;
   final RealtimeSessionConfig config;
+  final ArcaneVoiceProxyVadMode vadMode;
   final ProxyToolRegistry toolRegistry;
   late final ProviderSessionRuntime runtime;
   late final ProviderToolExecutionBridge toolExecutionBridge;
@@ -34,10 +36,12 @@ class GeminiLiveSession implements RealtimeProviderSession {
   int firstAudioAtMs = -1;
   int responseAudioChunkCount = 0;
   bool initialGreetingTriggered = false;
+  bool providerSpeechActive = false;
 
   GeminiLiveSession({
     required this.apiKey,
     required this.config,
+    required this.vadMode,
     required this.toolRegistry,
     required Future<void> Function(RealtimeServerMessage payload) onJsonEvent,
     required Future<void> Function(Uint8List audioBytes) onAudioChunk,
@@ -107,6 +111,10 @@ class GeminiLiveSession implements RealtimeProviderSession {
       info(
         "[gemini] upstream audio chunk #$upstreamAudioChunkCount (${audioBytes.length} bytes)",
       );
+    }
+    if (_usesProviderVad) {
+      await _sendAudioChunk(audioBytes);
+      return;
     }
     await _handleTurnDetection(audioBytes, rms, chunkDurationMs);
   }
@@ -189,6 +197,9 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   Future<void> _handleServerContent(Map<String, Object?> content) async {
     if (content["interrupted"] == true) {
+      if (_usesProviderVad) {
+        await _ensureProviderSpeechStarted(trigger: "interrupted");
+      }
       info(
         "[gemini] assistant turn #$assistantTurnCount interrupted by user activity at ${runtime.nowMs}ms",
       );
@@ -205,6 +216,9 @@ class GeminiLiveSession implements RealtimeProviderSession {
       content["inputTranscription"],
     );
     if (inputTranscript.isNotEmpty) {
+      if (_usesProviderVad) {
+        await _ensureProviderSpeechStarted(trigger: "transcript");
+      }
       await _emitTranscriptUpdate(text: inputTranscript, speaker: "user");
     }
 
@@ -241,6 +255,9 @@ class GeminiLiveSession implements RealtimeProviderSession {
 
   Future<void> _handleModelTurn(Map<String, Object?> modelTurn) async {
     if (!responseActive) {
+      if (_usesProviderVad) {
+        await _handleProviderSpeechStopped(trigger: "response");
+      }
       responseActive = true;
       assistantTurnCount++;
       assistantTurnInterrupted = false;
@@ -492,9 +509,10 @@ class GeminiLiveSession implements RealtimeProviderSession {
         },
       },
     },
-    "realtimeInputConfig": <String, Object?>{
-      "automaticActivityDetection": <String, Object?>{"disabled": true},
-    },
+    "realtimeInputConfig": ProxyVadModeSupport.buildGeminiRealtimeInputConfig(
+      vadMode: vadMode,
+      config: config.turnDetection,
+    ),
     "systemInstruction": <String, Object?>{
       "parts": <Map<String, Object?>>[
         <String, Object?>{"text": config.instructions},
@@ -509,6 +527,28 @@ class GeminiLiveSession implements RealtimeProviderSession {
     if (event.containsKey("usageMetadata")) return;
     if (event.containsKey("serverContent")) return;
     verbose("[gemini] event ${jsonEncode(event)}");
+  }
+
+  bool get _usesProviderVad => ProxyVadModeSupport.usesProviderVad(vadMode);
+
+  Future<void> _ensureProviderSpeechStarted({required String trigger}) async {
+    if (providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = true;
+    userTranscriptBuffer.startTurn();
+    info("[gemini] speech started via $trigger at ${runtime.nowMs}ms");
+    await runtime.emitSpeechStarted();
+  }
+
+  Future<void> _handleProviderSpeechStopped({required String trigger}) async {
+    if (!providerSpeechActive) {
+      return;
+    }
+    providerSpeechActive = false;
+    lastActivityEndAtMs = runtime.nowMs;
+    info("[gemini] speech stopped via $trigger at ${lastActivityEndAtMs}ms");
+    await runtime.emitSpeechStopped();
   }
 
   String _readTranscriptionText(Object? transcription) {

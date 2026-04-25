@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 
 import 'package:arcane_voice/src/call/audio_capture_service.dart';
+import 'package:arcane_voice/src/call/echo_aware_uplink_gate.dart';
 import 'package:arcane_voice/src/call/audio_playback_service.dart';
 import 'package:arcane_voice/src/call/client_tool.dart';
 import 'package:arcane_voice/src/call/pcm16_level_meter.dart';
@@ -24,6 +25,7 @@ class CallSessionController extends ChangeNotifier {
   final AudioPlaybackService playbackService;
   final TranscriptTimeline transcriptTimeline;
   final ArcaneVoiceClientToolRegistry clientToolRegistry;
+  final EchoAwareUplinkGate echoAwareUplinkGate = EchoAwareUplinkGate();
   final Stopwatch debugClock = Stopwatch();
 
   StreamSubscription<RealtimeSocketEvent>? socketSubscription;
@@ -84,6 +86,9 @@ class CallSessionController extends ChangeNotifier {
   bool get canStart => !connecting && !callActive;
 
   bool get canStop => connecting || callActive;
+
+  bool get usesEchoAwareUplinkGate =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.macOS;
 
   String get provider => providerOption.id;
 
@@ -222,6 +227,7 @@ class CallSessionController extends ChangeNotifier {
 
     await captureService.stop();
     await playbackService.reset();
+    await captureService.teardownCall();
     socketClient.sendMessage(const RealtimeSessionStopRequest());
     await _closeSocket();
   }
@@ -280,6 +286,7 @@ class CallSessionController extends ChangeNotifier {
     peakPlaybackRms = 0;
     silentMicrophoneChunkCount = 0;
     microphoneSilenceReported = false;
+    echoAwareUplinkGate.reset();
   }
 
   void _resetTurnDebugState() {

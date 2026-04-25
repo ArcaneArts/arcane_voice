@@ -25,7 +25,12 @@ extension CallSessionControllerSocketHandling on CallSessionController {
       await currentQueue;
     } catch (_) {}
 
-    await _processSocketEvent(event);
+    try {
+      await _processSocketEvent(event);
+    } catch (error, stackTrace) {
+      warn("[client] socket event handling failed: $error\n$stackTrace");
+      await _fail(error.toString());
+    }
   }
 
   Future<void> _processSocketEvent(RealtimeSocketEvent event) async {
@@ -53,10 +58,14 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     _ensureAssistantTurnStarted(trigger: "audio");
     playbackChunkCount++;
     assistantAudioChunkCount++;
+    int nowMs = _debugNowMs();
     int rms = Pcm16LevelMeter.computeRms(event.audioBytes);
     peakPlaybackRms = peakPlaybackRms > rms ? peakPlaybackRms : rms;
+    if (usesEchoAwareUplinkGate) {
+      echoAwareUplinkGate.notePlaybackChunk(rms: rms, nowMs: nowMs);
+    }
     if (assistantFirstAudioAtMs < 0) {
-      assistantFirstAudioAtMs = _debugNowMs();
+      assistantFirstAudioAtMs = nowMs;
       int latencyMs = assistantTurnStartedAtMs < 0
           ? -1
           : assistantFirstAudioAtMs - assistantTurnStartedAtMs;
@@ -190,9 +199,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
       String toolLabel = RealtimeToolExecutionTarget.displayLabel(
         payload.executionTarget,
       );
-      _appendOrQueueSystemEntry(
-        "Running $toolLabel tool ${payload.name}...",
-      );
+      _appendOrQueueSystemEntry("Running $toolLabel tool ${payload.name}...");
       return;
     }
 
@@ -232,6 +239,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
       "[client] session started input=$inputSampleRate output=$outputSampleRate provider=${payload.provider} model=${payload.model}",
     );
 
+    await captureService.prepareForCall(sampleRate: inputSampleRate);
     await playbackService.ensureInitialized(sampleRate: outputSampleRate);
     await captureService.start(
       sampleRate: inputSampleRate,
@@ -273,6 +281,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     info("[client] remote close at ${_debugNowMs()}ms");
     await captureService.stop();
     await playbackService.reset();
+    await captureService.teardownCall();
     await _closeSocket();
     _setInactiveState(state: lastError.isEmpty ? "idle" : sessionState);
     _flushPendingSystemEntries();
@@ -294,6 +303,7 @@ extension CallSessionControllerSocketHandling on CallSessionController {
     _setInactiveState(state: "error");
     await captureService.stop();
     await playbackService.reset();
+    await captureService.teardownCall();
     await _closeSocket();
     _flushPendingSystemEntries();
     _appendSystemEntry(message);

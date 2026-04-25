@@ -8,12 +8,12 @@ the typed websocket control protocol, provider catalog metadata, shared
 turn-detection config, and the protocol codec used by both the Flutter client
 package and the proxy/server package.
 
-## What's New In 1.1.0
+## What's New In 1.3.0
 
-- `RealtimeSessionStartRequest` now includes `sessionContextJson`.
-- Tool execution target naming is standardized on
-  `RealtimeToolExecutionTarget.arcaneVoiceProxy` and
-  `RealtimeToolExecutionTarget.arcaneVoiceClient`.
+- Coordinated release with `arcane_voice` and `arcane_voice_proxy` 1.3.0.
+- The realtime wire format remains stable.
+- `sessionContextJson` remains the shared opaque transport for host-owned auth,
+  routing, and RAG scope metadata.
 
 ## What Is In This Package
 

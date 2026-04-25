@@ -9,13 +9,15 @@ This package is the server-side counterpart to
 session policy, usage reporting, and tool execution behind one stable
 client-facing websocket interface.
 
-## What's New In 1.1.0
+## What's New In 1.3.0
 
-- session resolution hooks for host-owned auth and per-session configuration
-- lifecycle callbacks for session start, usage observation, tool execution, and
-  session stop
-- normalized usage reporting across provider runtimes
-- cleaned public API that uses `proxyTools` and `ArcaneVoice...` names only
+- Twilio inbound calls can connect directly to the proxy through
+  `/twilio/voice` and `/ws/twilio`.
+- Twilio caller metadata is attached to session context and exposed through
+  `ArcaneVoiceTwilioCallContext`.
+- Hosts can use `sessionResolver` to map caller phone numbers to scoped
+  prompts, RAG data, provider config, and per-session proxy tools.
+- Proxy-configurable VAD mode supports `auto`, `local`, and `provider`.
 
 ## Supported Providers
 
@@ -35,6 +37,8 @@ client-facing websocket interface.
   `ArcaneVoiceProxyResolvedSession` for host-authenticated session bootstrap
 - `ArcaneVoiceProxyLifecycleCallbacks` and `ArcaneVoiceProxyUsage` for
   auditing, metering, and billing hooks
+- `ArcaneVoiceTwilioConfig`, `ArcaneVoiceTwilioGateway`, and
+  `ArcaneVoiceTwilioCallContext` for Twilio inbound call hosting and routing
 
 ## Responsibilities
 
@@ -42,7 +46,7 @@ client-facing websocket interface.
 - keep provider auth and session details off the client
 - execute proxy-owned tools on the server
 - normalize provider-specific events into one client protocol
-- apply shared local turn-detection config across providers
+- support either local turn detection or provider-native VAD from one proxy API
 - let host applications override session config on a per-call basis
 
 ## Required Environment Variables
@@ -58,10 +62,102 @@ client-facing websocket interface.
 - `GET /` basic service metadata
 - `GET /health` health check
 - `GET /ws/realtime` websocket endpoint used by `arcane_voice`
+- `GET|POST /twilio/voice` Twilio Voice webhook that returns
+  `<Connect><Stream>` TwiML
+- `GET /ws/twilio` Twilio Media Streams websocket endpoint
 
 If your app already has its own HTTP server and routing layer, use
 `RealtimeGateway` directly instead of `ArcaneVoiceProxyServer` so you can mount
 the websocket handler on a custom path such as `/call/realtime`.
+
+## Twilio Voice
+
+Point a Twilio phone number's incoming-call webhook at your public proxy URL:
+
+```text
+https://voice.example.com/twilio/voice
+```
+
+The proxy responds with TwiML that connects the call to:
+
+```text
+wss://voice.example.com/ws/twilio
+```
+
+Twilio call metadata such as `From`, `To`, `CallSid`, and `AccountSid` is
+passed into the stream as custom parameters and then attached to
+`sessionContextJson`:
+
+```json
+{
+  "source": "twilio",
+  "twilio": {
+    "callSid": "CA...",
+    "from": "+15551230000",
+    "to": "+15557654321"
+  }
+}
+```
+
+Use `sessionResolver` to authorize by caller/called number and return the final
+provider config, prompt, tools, and context for that call.
+
+```dart
+ArcaneVoiceProxyToolRegistry toolsForCaller(String callerNumber) {
+  return ArcaneVoiceProxyToolRegistry(
+    tools: <ArcaneVoiceProxyTool>[
+      ArcaneVoiceProxyCallbackTool.jsonSchema(
+        name: 'query_authorized_records',
+        description: 'Search records permitted for this caller.',
+        parameters: <String, Object?>{
+          'type': 'object',
+          'properties': <String, Object?>{
+            'query': <String, Object?>{'type': 'string'},
+          },
+          'required': <String>['query'],
+        },
+        onExecute: (arguments) async {
+          return queryRagForCaller(callerNumber, arguments['query']);
+        },
+      ),
+    ],
+  );
+}
+
+ArcaneVoiceProxyServer proxyServer = ArcaneVoiceProxyServer(
+  environment: ArcaneVoiceProxyEnvironment.fromPlatform(),
+  sessionResolver: (request) async {
+    ArcaneVoiceTwilioCallContext? twilio =
+        ArcaneVoiceTwilioCallContext.maybeFromSessionRequest(request);
+    String? callerNumber = twilio?.callerNumber;
+
+    if (callerNumber == null || !isAuthorizedCaller(callerNumber)) {
+      throw StateError('Caller is not authorized.');
+    }
+
+    return ArcaneVoiceProxyResolvedSession(
+      provider: RealtimeProviderCatalog.openAiId,
+      config: RealtimeSessionConfig.fromRequest(request.request).copyWith(
+        instructions:
+            'Use only records authorized for caller $callerNumber.',
+      ),
+      proxyTools: toolsForCaller(callerNumber),
+      context: <String, Object?>{
+        'callerNumber': callerNumber,
+        'twilio': twilio?.toJson(),
+      },
+    );
+  },
+);
+```
+
+Optional environment variables for the built-in server:
+
+- `TWILIO_STREAM_URL` absolute websocket URL when the proxy cannot derive the
+  public `wss://` URL from forwarded headers
+- `TWILIO_PROVIDER`, `TWILIO_MODEL`, `TWILIO_VOICE`
+- `TWILIO_INSTRUCTIONS`, `TWILIO_INITIAL_GREETING`
+- `TWILIO_VOICE_WEBHOOK_PATH`, `TWILIO_STREAM_WEBSOCKET_PATH`
 
 ## Bootstrap Example
 
@@ -76,6 +172,7 @@ Future<void> main() async {
   ArcaneVoiceProxyServer proxyServer = ArcaneVoiceProxyServer(
     environment: environment,
     proxyTools: ArcaneVoiceProxyToolRegistry.empty(),
+    vadMode: ArcaneVoiceProxyVadMode.auto,
   );
   int port = int.parse(Platform.environment['PORT'] ?? '8080');
   HttpServer server = await proxyServer.serve(
@@ -84,6 +181,39 @@ Future<void> main() async {
   );
   stdout.writeln('Server listening on port ${server.port}');
 }
+```
+
+## VAD Mode
+
+Configure turn detection once at proxy setup time:
+
+```dart
+ArcaneVoiceProxyServer proxyServer = ArcaneVoiceProxyServer(
+  environment: ArcaneVoiceProxyEnvironment.fromPlatform(),
+  vadMode: ArcaneVoiceProxyVadMode.auto,
+);
+```
+
+Modes:
+
+- `ArcaneVoiceProxyVadMode.auto`
+  Uses provider-native VAD where the provider adapter supports it well. This is
+  the default.
+- `ArcaneVoiceProxyVadMode.local`
+  Uses Arcane Voice's proxy-side turn detector for providers that support manual
+  turn handling.
+- `ArcaneVoiceProxyVadMode.provider`
+  Prefers each provider's own server-side VAD / activity detection behavior.
+
+You can also override the mode per resolved session:
+
+```dart
+return ArcaneVoiceProxyResolvedSession(
+  provider: RealtimeProviderCatalog.openAiId,
+  config: RealtimeSessionConfig.fromRequest(request.request),
+  proxyTools: ArcaneVoiceProxyToolRegistry.empty(),
+  vadMode: ArcaneVoiceProxyVadMode.provider,
+);
 ```
 
 ## Session Resolution
